@@ -6,6 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.Management.Automation" Version="7.3.0" />
+    <PackageReference Include="System.Management.Automation" Version="7.3.0" PrivateAssets="All" />
   </ItemGroup>
 </Project>

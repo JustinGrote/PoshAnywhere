@@ -1,6 +1,4 @@
 ﻿using System.Management.Automation;
-using System.Management.Automation.Remoting;
-using System.Management.Automation.Remoting.Client;
 using System.Management.Automation.Runspaces;
 
 namespace PoshTransports;
@@ -10,23 +8,23 @@ namespace PoshTransports;
 /// </summary>
 public abstract class UnauthenticatedRunspaceConnectionInfo : RunspaceConnectionInfo
 {
-  // These first few overrides are not relevant to what we are doing here
+  // These are null overrides that are required to be implemented but we do not use.
 
   public override PSCredential? Credential
   {
     get => null;
-    set => throw new NotImplementedException();
+    set => throw new NotImplementedException("Cannot set Credential");
   }
 
   public override AuthenticationMechanism AuthenticationMechanism
   {
     get => AuthenticationMechanism.Default;
-    set => throw new NotImplementedException();
+    set => throw new NotImplementedException("Cannot set AuthenticationMechanism");
   }
 
   public override string CertificateThumbprint
   {
-    get => throw new NotImplementedException();
-    set => throw new NotImplementedException();
+    get => throw new NotImplementedException("Cannot fetch CertificateThumbprint");
+    set => throw new NotImplementedException("Cannot set CertificateThumbprint");
   }
 }
