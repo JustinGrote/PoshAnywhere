@@ -8,7 +8,7 @@ namespace PoshTransports;
 /// </summary>
 [Cmdlet(VerbsCommon.New, "TcpSession")]
 [OutputType(typeof(PSSession))]
-public sealed class NewTcpSessionCommand : PSCmdlet
+public sealed class NewTcpSessionCmdlet : PSCmdlet
 {
   private TcpConnectionInfo? _connectionInfo;
   private Runspace? _runspace;
@@ -50,6 +50,7 @@ public sealed class NewTcpSessionCommand : PSCmdlet
         applicationArguments: null,
         name: Name);
 
+    // The HandleRunspaceStateChanged will release this thread lock once the runspace is opened (or fails to open)
     _openAsync = new ManualResetEvent(false);
     _runspace.StateChanged += HandleRunspaceStateChanged;
 
@@ -59,10 +60,12 @@ public sealed class NewTcpSessionCommand : PSCmdlet
       _openAsync.WaitOne();
 
       WriteObject(
-          PSSession.Create(
-              runspace: _runspace,
-              transportName: "PSNPTest",
-              psCmdlet: this));
+        PSSession.Create(
+          runspace: _runspace,
+          transportName: "PSNPTest",
+          psCmdlet: this
+        )
+      );
     }
     finally
     {
@@ -75,12 +78,12 @@ public sealed class NewTcpSessionCommand : PSCmdlet
   /// </summary>
   protected override void StopProcessing()
   {
-    // Currently no action
+    _runspace?.Dispose();
   }
 
   private void HandleRunspaceStateChanged(
-      object? source,
-      RunspaceStateEventArgs stateEventArgs)
+    object? source,
+    RunspaceStateEventArgs stateEventArgs)
   {
     switch (stateEventArgs.RunspaceStateInfo.State)
     {
