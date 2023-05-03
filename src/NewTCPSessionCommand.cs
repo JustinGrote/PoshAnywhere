@@ -87,6 +87,7 @@ public sealed class NewTcpSessionCommand : PSCmdlet
       case RunspaceState.Opened:
       case RunspaceState.Closed:
       case RunspaceState.Broken:
+        if (_runspace is null) { break; }
         _runspace.StateChanged -= HandleRunspaceStateChanged;
         ReleaseWait();
         break;
