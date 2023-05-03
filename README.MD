@@ -11,17 +11,17 @@ This is an implementation of the [Custom Transport Feature Introduced in PowerSh
 
 PSRP effectively is a protocol that occurs by exchanging XML-encoded single line messages across a in/out pipe. This is known as an `OutOfProc` transport, which differs from the classic `WSMan` based transport. The transport layer handles how those messages get from the client to the server and vice versa. You don't really need to know much more about PSRP to build a transport layer other than it is sending single-line xml messages back and forth, much in the same way you don't need to understand the content of an HTTPS request to move that data back and forth via TCP.
 
-By focusing on the concepts of streams and pipes the primary transport abstraction for PSRP, we can then use any technology that supports streams/pipes for I/O. This allows for a broad level of potential implementations, such as:
+By focusing on the core concept of inter-process-communication (IPC) implemented via .NET streams, process standard in/out, and OS named pipes as the primary transport abstraction for PSRP, we can then use any technology that supports these technologies as our main transport. This allows for a broad level of potential implementations, such as:
 
 - Stdin/Stdout of processes
-- SSH (the current implementation basically uses a subsystem to pipe the stdin/out XML messages between the server and client)
+- SSH (the built-in implementation basically calls a SSH subsystem to pipe the stdin/out XML messages between the server and client)
 - Named Pipes
 - TCP Sockets
 - HTTP/HTTPS stream transports like Websockets
 - SignalR
 - Azure Queues/Event Grid
 - Apache Kafka
-- Websocket or Port Forwarding Rendesvous Services such as NGrok, Cloudflare Tunnels, or Azure Relay
+- Tunneling services such as Cloudflare Tunnels, Azure Relay or one of the [many available options](https://github.com/anderspitman/awesome-tunneling)
 - Adding custom authentication such as Azure OAuth2 or MFA
 
 ## Client Side Implementation
@@ -34,7 +34,9 @@ While functional, the runspace alone is not very user friendly, so you usually w
 1. Establishing the Runspace Using the Connection Info
 1. Opening the runspace, connecting to the server, and then creating and returning a PSSession.
 
-For the NamedPipeConnection example, the "server" already exists, so the client is just wiring up to that client. For the AttachProcess example, as long as the initialized process accepts and responds to PSRP messages
+For the NamedPipeConnection example, the "server" already exists, so the client is just wiring up to that client. For the AttachProcess example, as long as the initialized process accepts and responds to PSRP messages.
+
+There is a lot of additional scaffolding such as a `PSRemotingCryptoHelper` and WinRM-related authentication scaffolding that isn't relevant to most custom transports and can usually be ignored. For the Authentication portion, this example includes an `UnauthentictedRunspaceConnectionInfo` that dead-ends most of that scaffolding and makes a custom implementation much simpler.
 
 Note that this implementation part is almost exclusively focused on the **client** side.
 
@@ -43,11 +45,15 @@ Note that this implementation part is almost exclusively focused on the **client
 ```mermaid
 sequenceDiagram
   actor A as User
+  box Navy Implement This
   participant C as NewCustomSessionCmdlet
+  end
   participant F as RunspaceFactory
   participant R as Runspace
+  box Navy Implement These
   participant I as RunspaceConnectionInfo
   participant T as ClientSessionTransportManagerBase
+  end
   A->>C: New-CustomSession
   C->>F: CreateRunspace(connectionInfo)
   F->>I: CreateClientSessionTransportManager()
@@ -70,4 +76,4 @@ Most servers will be some form of wiring up to these in/out channels (either nam
 
 ## Alternative Server Implementations
 
-Even though it is called the PowerShell Remoting Protocol, it is in fact designed to be agnostic of PowerShell and is a general RPC framework. You could even have a PSRP remote that isn't even a PowerShell session. For instance, [there is an implementation of PSRP](https://psrpcore.readthedocs.io/en/latest/) in Python, so theoretically you could remote PowerShell from Python or send commands from PowerShell to a Python-hosted service.
+Even though it is called the PowerShell Remoting Protocol, it is a general RPC framework. You could even have a PSRP remote that isn't even a PowerShell session. For instance, [there is an implementation of PSRP](https://psrpcore.readthedocs.io/en/latest/) in Python, so theoretically you could remote PowerShell from Python or send commands from PowerShell to a Python-hosted service. The thing you are communicating with might not even be PowerShell and could just be a web service, assuming it implements the relevant parts of the PSRP spec and responds with XML messages appropriately (not an easy feat)
