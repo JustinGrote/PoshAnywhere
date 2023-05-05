@@ -1,20 +1,18 @@
 #Exposes the Powershell Remoting Protocol via a TCP Port
 using namespace System.Management.Automation.Runspaces
 using namespace System.Net.Sockets
+using namespace System.Net.WebSockets
+using namespace System.Collections.Generic
 using namespace System.Threading.Tasks
 using namespace System.IO.Pipes
 using namespace System.IO
+using namespace System.Net
+using namespace System.Text
 
-[CmdletBinding(DefaultParameterSetName = 'Server')]
 param (
-  [Parameter(Position = 0, ParameterSetName = 'Client')][String]$ComputerName = 'localhost',
-  [Parameter(ParameterSetName = 'Client')][String]$PipeName = $("PSHost.$ComputerName.$(New-Guid)"),
-  [Int]$Port = 7073,
-  [Parameter(ParameterSetName = 'Server')][ipaddress]$ListenAddress = '127.0.0.1',
-  [Parameter(ParameterSetName = 'Server')][Switch]$AllowRemoteConnections,
-  [Parameter(ParameterSetName = 'Server')][Switch]$NoSSHRelay,
-  [Parameter(ParameterSetName = 'Server')][String]$SSHRelayHost = 'pwsh.link',
-  [Parameter(ParameterSetName = 'Server')][Int]$SSHRelayPort = 2222
+  #Use a raw tcp listener instead of a websocket
+  [Switch]$TCP,
+  [Parameter(ParameterSetName = 'Server')][Switch]$AllowRemoteConnections
 )
 
 if ($AllowRemoteConnections) { $ListenAddress = '0.0.0.0' }
@@ -98,19 +96,137 @@ function Join-Stream {
   }
 }
 
+#Region WebSocketServer
+
+# Binds a websocket to a stream. You should provide a connected, async inout pipe stream with autoflush enabled.
+function Start-WebSocketStreamServer ([ValidateNotNullOrEmpty()][int]$Port = 7073, [Stream]$PipeStream) {
+  $server = [HttpListener]::new()
+  $server.Prefixes.Add("http://localhost:$Port/psrp/")
+  $server.Start()
+
+  #This is the outer loop that accepts connections. We may not need a loop here but it may help with reconnections.
+  while ($true) {
+    $contextTask = $server.GetContextAsync()
+
+    #This loop allows Ctrl-C to keep working
+    while ($contextTask.Wait(500) -ne $true) {}
+    $context = $contextTask.GetAwaiter().GetResult()
+
+    if (-not $context.Request.IsWebSocketRequest) {
+      Write-Host 'WEBSOCKET: non-websocket request received. Disconnecting'
+      $context.Response.StatusCode = 400
+      $context.Response.Close()
+      continue
+    }
+
+    Write-Host "WEBSOCKET: connection from $($context.Request.RemoteEndPoint)"
+    try {
+      # Powershell will cast null to an empty string, in this case we need to force an actual null
+      $websocketContext = $context.AcceptWebSocketAsync([nullstring]::Value).GetAwaiter().GetResult()
+      $websocket = $websocketContext.WebSocket
+    } catch {
+      Write-Host "WEBSOCKET: Error accepting websocket request: $($_.Exception.Message)"
+      $context.Response.StatusCode = 500
+      $context.Response.Close()
+      continue
+    }
+
+    $pipeReader = [StreamReader]::new($PipeStream)
+
+    try {
+      [List[object]]$activeTasks = @()
+      $fromPipeTask = $null
+      $fromWebSocketTask = $null
+      [ArraySegment[byte]]$receiveBuffer = [ArraySegment[byte]]::new([byte[]]::new(1024))
+      #This core loop uses Tasks to keep from blocking on either the websocket or the pipe, and acts on them as messages come in. This also ensures the websocket is never concurrently written to/read from, which is not allowed.
+      while ($websocket.State -eq [WebSocketState]::Open) {
+        if (-not $fromPipeTask) {
+          $fromPipeTask = $pipeReader.ReadLineAsync()
+          $activeTasks.Add($fromPipeTask)
+        }
+        if (-not $fromWebSocketTask) {
+          $fromWebSocketTask = $websocket.ReceiveAsync($receiveBuffer, [Threading.CancellationToken]::None)
+          $activeTasks.Add($fromWebSocketTask)
+        }
+
+        #This is the core of the loop, we wait until either we recieve data from the named pipe or the websocket. If 5 seconds pass, verify the connection is still open before checking again.
+        do {
+          [int]$TIMEOUT_REACHED = -1
+          [int]$completedTaskIndex = [Task]::WaitAny($activeTasks, 5000)
+
+          #-1 means we reached the timeout.
+          if (
+            $completedTaskIndex -eq $TIMEOUT_REACHED -and
+            $websocket.State -ne [WebSocketState]::Open
+          ) {
+            Write-Host 'WEBSOCKET: Client closed connection'
+            break
+          }
+        } until ($completedTaskIndex -ne $TIMEOUT_REACHED)
+
+        $completedTask = $activeTasks[$completedTaskIndex]
+        $activeTasks.RemoveAt($completedTaskIndex)
+
+        #If the websocket task completed, we need to send the data to the named pipe
+        if ($completedTask -eq $fromWebSocketTask) {
+          $result = $fromWebSocketTask.GetAwaiter().GetResult()
+
+          if ($result.MessageType -eq [WebSocketMessageType]::Close) {
+            $websocket.CloseAsync('NormalClosure', '', [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            Write-Host 'WEBSOCKET: Client closed connection'
+            break
+          }
+          [byte[]]$fromWebSocket = $receiveBuffer.ToArray()
+
+          $messageString = [Encoding]::UTF8.GetString($fromWebSocket)
+          Write-Host "WEBSOCKET RECEIVED: $messageString"
+          $PipeStream.Write($fromWebSocket, 0, $fromWebSocket.length) | Out-Null
+          $PipeStream.Flush()
+          #Reset the websocket task to await a new message
+          $fromWebSocketTask = $null
+        }
+
+        #If the pipe task completed, we need to send the data to the websocket
+        if ($completedTask -eq $fromPipeTask) {
+          #Fetch a PSXML message from the named pipe
+          $Message = $fromPipeTask.GetAwaiter().GetResult()
+          $MessageBytes = [Encoding]::UTF8.GetBytes($Message)
+          $Segment = [ArraySegment[byte]]::new($MessageBytes)
+          $websocket.SendAsync($Segment, [WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        }
+      }
+    } catch {
+      throw
+    } finally {
+      $websocket.Dispose()
+    }
+  }
+}
+
+
 #region main
 try {
   $pipeClient = Connect-PSRemotingNamedPipe
-  $tcpClient = Start-PSRemotingTCPListener
-  $firstClosedStream = Join-Stream -Wait $pipeClient, $tcpClient.GetStream()
-  if (-not $firstClosedStream.IsCompletedSuccessfully) {
-    throw $firstClosedStream.Exception
+
+  if ($TCP) {
+    $tcpClient = Start-PSRemotingTCPListener
+    $firstClosedStream = Join-Stream -Wait $pipeClient, $tcpClient.GetStream()
+    if (-not $firstClosedStream.IsCompletedSuccessfully) {
+      throw $firstClosedStream.Exception
+    }
+    return
   }
+
+  #Default Websocket Implementation
+  Start-WebSocketStreamServer -PipeStream $pipeClient
+
 } catch { Write-Error $PSItem } finally {
   $pipeClient.Close()
   $pipeClient.Dispose()
-  $tcpClient.Close()
-  $tcpClient.Dispose()
-  if ($tcpListener) { $tcpListener.Stop() }
+  if ($TCP) {
+    $tcpClient.Close()
+    $tcpClient.Dispose()
+    if ($tcpListener) { $tcpListener.Stop() }
+  }
 }
 #endregion main
