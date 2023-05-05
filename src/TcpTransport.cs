@@ -48,14 +48,13 @@ public class TcpConnectionInfo : UnauthenticatedRunspaceConnectionInfo
   }
 }
 
-
 /// <summary>
 /// The actual transport manager that will be used to send and receive messages. Note that it derives from ClientSessionTransportManagerBase, which derives from BaseClientSessionTransportManager. This is confusing.
 /// </summary>
 class TcpClientSessionTransportManager : ClientSessionTransportManagerBase
 {
   private readonly TcpConnectionInfo connectionInfo;
-  internal TcpClientSessionTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, TcpConnectionInfo connectionInfo) : base(instanceId, cryptoHelper) => this.connectionInfo = connectionInfo;
+  internal TcpClientSessionTransportManager(Guid instanceId, string _, PSRemotingCryptoHelper cryptoHelper, TcpConnectionInfo connectionInfo) : base(instanceId, cryptoHelper) => this.connectionInfo = connectionInfo;
 
   public override void CloseAsync()
   {

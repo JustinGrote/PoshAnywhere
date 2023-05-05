@@ -77,3 +77,9 @@ Most servers will be some form of wiring up to these in/out channels (either nam
 ## Alternative Server Implementations
 
 Even though it is called the PowerShell Remoting Protocol, it is a general RPC framework. You could even have a PSRP remote that isn't even a PowerShell session. For instance, [there is an implementation of PSRP](https://psrpcore.readthedocs.io/en/latest/) in Python, so theoretically you could remote PowerShell from Python or send commands from PowerShell to a Python-hosted service. The thing you are communicating with might not even be PowerShell and could just be a web service, assuming it implements the relevant parts of the PSRP spec and responds with XML messages appropriately (not an easy feat)
+
+## Websocket Server
+
+Cloudflare tunnels requires some kind of http listener to work (at least easily, arbitrary TCP tunnels require more authentication) so I needed something that ran over HTTPS in real time.
+
+Websockets fit the bill nicely and websocket libraries ship in PowerShell back to 5.1. I wanted a zero dependency websocket server that could run entirely in pure PS. While I thought I'd have to drop to C# and Add-Type to accomplish this, I found [an implementation](https://www.c-sharpcorner.com/UploadFile/bhushanbhure/websocket-server-using-httplistener-and-client-with-client/) that I could translate to a PowerShell runspace (since PowerShell doesnt support the async concept well and blocks on most async patterns, better to run it in a separate runspace)
