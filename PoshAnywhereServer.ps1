@@ -161,7 +161,7 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
 
   try {
     $pipeReader = [StreamReader]::new($Stream)
-    [ArraySegment[byte]]$receiveBuffer = [ArraySegment[byte]]::new([byte[]]::new(1024))
+    [ArraySegment[byte]]$receiveBuffer = [ArraySegment[byte]]::new([byte[]]::new(8192))
 
     #This outer loop uses Tasks to keep from blocking on either the websocket or the pipe, and acts on them as messages come in. This also ensures the websocket is never concurrently written to/read from, which is not allowed.
     while ($Websocket.State -eq [WebSocketState]::Open) {
@@ -183,7 +183,7 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
           $completedTaskIndex -eq $TIMEOUT_REACHED -and
           $websocket.State -ne [WebSocketState]::Open
         ) {
-          Write-Host 'WEBSOCKET: Client closed connection'
+          Write-Host "WEBSOCKET: Websocket is no longer open. Current Status: $websocket.State"
           break
         }
       } until ($completedTaskIndex -ne $TIMEOUT_REACHED)
@@ -193,21 +193,30 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
 
       #If the websocket task completed, it means we received a message from the websocket and we need to send the data to the named pipe
       if ($completedTask -eq $fromWebSocketTask) {
+        #Buffers can be tricky, so we instead capture everything into a memorystream and then extract the string out of that.
+        Write-Host 'WEBSOCKET: Begin Message Receive From Client'
         $result = $fromWebSocketTask.GetAwaiter().GetResult()
 
-        if ($result.MessageType -eq [WebSocketMessageType]::Close) {
-          $websocket.CloseAsync('NormalClosure', '', [CancellationToken]::None).GetAwaiter().GetResult()
-          Write-Host 'WEBSOCKET: Client closed connection'
-          break
+        #We only want to load the data that was received, whatever is after that is unreliable
+        $receiveStream = [MemoryStream]::new($receiveBuffer[0..$result.Count])
+
+        while (-not $result.EndOfMessage) {
+          # We don't need to reset $receiveBuffer here because it will be overwritten by the next ReceiveAsync call
+          $result = $websocket.ReceiveAsync($receiveBuffer, [CancellationToken]::None).GetAwaiter().GetResult()
+          $receiveStream.Write($receiveBuffer, 0, $result.Count)
+          if ($result.MessageType -eq [WebSocketMessageType]::Close) {
+            Write-Host 'WEBSOCKET: Received Close Request from Client. Responding with NormalClosure'
+            $websocket.CloseAsync('NormalClosure', '', [CancellationToken]::None).GetAwaiter().GetResult()
+            break
+          }
         }
-        [byte[]]$fromWebSocket = $receiveBuffer.ToArray()
 
-        #This is just for debugging and unnecessary, we don't care about the actual message content at this transport layer, we're just moving bytes between pipes. One thing we could do is validate each chunk is a valid single-line XML, but PSRP will do that for us at a higher level.
-        $wsMessage = [Encoding]::UTF8.GetString($fromWebSocket)
-        Write-Host "WEBSOCKET RECEIVED: $wsMessage"
+        #Rewind the stream and output the captured bytes to the named pipe
+        Write-Host "WEBSOCKET: Received Message of length $($receiveStream.Length) from Client. Sending to Named Pipe"
+        $receiveStream.Position = 0
+        $receiveStream.CopyTo($Stream)
+        $Stream.Write(([encoding]::UTF8.GetBytes([Environment]::NewLine)))
 
-        $PipeStream.Write($fromWebSocket, 0, $fromWebSocket.length) | Out-Null
-        $PipeStream.Flush()
         #Reset the websocket task to await a new message
         $fromWebSocketTask = $null
       }
@@ -227,6 +236,7 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
         $messageBytes = [Encoding]::UTF8.GetBytes($pipeMessage)
         $payload = [ArraySegment[byte]]::new($messageBytes)
         $pendingWriteTask = $websocket.SendAsync($payload, [WebSocketMessageType]::Text, $true, [CancellationToken]::None)
+        Write-Host 'Websocket Sent'
       }
     }
   } catch {
@@ -234,8 +244,7 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
     throw
   } finally {
     Write-Host 'WEBSOCKET: Closing websocket'
-    $websocket.Dispose()
-    $stream.Dispose($true)
+    $stream.Dispose()
   }
 }
 

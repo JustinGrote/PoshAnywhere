@@ -125,4 +125,3 @@ class TcpClientSessionTransportManager : ClientSessionTransportManagerBase
     connectionInfo.Client.Dispose();
   }
 }
-
