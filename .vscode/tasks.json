@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Watch-Publish",
+      "icon": {
+        "color": "terminal.ansiCyan",
+        "id": "sync"
+      },
+      "type": "shell",
+      "command": "dotnet watch publish -c Debug",
+      "group": "build",
+      "isBackground": true
+    }
+  ]
+}

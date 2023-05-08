@@ -63,6 +63,8 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
       }
     };
 
+    WriteVerbose($"Connecting to websocket host: {_connectionInfo.WebSocketUri}");
+
     _runspace.OpenAsync();
     // We use this instead of Open() to make this cmdlet cancellable
     while (!waitForRunspaceUsable.WaitOne(500)) { }

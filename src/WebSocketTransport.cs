@@ -72,10 +72,10 @@ class WebSocketTransportManager : ClientSessionTransportManagerBase
     StartReaderThread(client);
   }
 
-  // public override void CloseAsync()
-  // {
-  //   client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
-  // }
+  public override void CloseAsync()
+  {
+    client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
+  }
 
   /// <summary>
   /// Starts dedicated streamReader thread for messages coming from the stream
@@ -103,35 +103,28 @@ class WebSocketTransportManager : ClientSessionTransportManagerBase
       // Send one fragment.
       SendOneItem();
 
-      MemoryStream receiveStream = new();
-      StreamReader reader = new(receiveStream);
-      StreamWriter writer = new(receiveStream)
-      {
-        AutoFlush = true
-      };
       WebSocketReceiveResult receiveResult;
       // Start reader loop.
-      do
+      while (true)
       {
-        // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
-        byte[] buffer = new byte[8194];
-        receiveResult = client.ReceiveAsync(buffer, default).GetAwaiter().GetResult();
-        receiveStream.Write(buffer, 0, receiveResult.Count);
-      } while (!receiveResult.EndOfMessage);
+        using MemoryStream receiveStream = new();
+        StreamReader reader = new(receiveStream);
 
-      // Newline indicates the end of the message for the readline handler
-      writer.Write('\n');
-      // Rewind the memorystream so it can be read by readline
-      receiveStream.Position = 0;
-      var data = reader.ReadLine();
+        do
+        {
+          // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
+          byte[] buffer = new byte[8194];
+          receiveResult = client.ReceiveAsync(buffer, default).GetAwaiter().GetResult();
+          receiveStream.Write(buffer, 0, receiveResult.Count);
+        } while (!receiveResult.EndOfMessage);
 
-      if (data is null)
-      {
-        throw new InvalidDataException("Received null data from websocket, this should never happen.");
+        // Rewind the memorystream so it can be read by readline
+        receiveStream.Position = 0;
+        var data = reader.ReadLine() ?? throw new InvalidDataException("Received null data from websocket, this should never happen.");
+
+        // Console.WriteLine($"WEBSOCKET TO CLIENT: {data}");
+        HandleDataReceived(data);
       }
-      Console.WriteLine($"WEBSOCKET SERVER RECEIVE: {data}");
-      data += '\n';
-      HandleDataReceived(data);
     }
     catch (ObjectDisposedException)
     {
@@ -140,13 +133,13 @@ class WebSocketTransportManager : ClientSessionTransportManagerBase
     }
     catch (Exception e)
     {
-      throw new NotImplementedException($"Error in reader thread: {e.Message}");
+      throw new InvalidOperationException($"Error in reader thread: {e.Message}");
     }
   }
 
   protected override void CleanupConnection()
   {
-    client.Dispose();
+    // client.Dispose();
   }
 }
 
@@ -167,7 +160,7 @@ class WebSocketTextWriter : TextWriter
       return;
     }
 
-    Console.WriteLine($"Websocket CLIENT SEND: {data}");
+    // Console.WriteLine($"WEBSOCKET FROM CLIENT: {data}");
 
     // We do not add a newline here, it will be added on the other side when passed to the named pipe, because websockets has the concept of messages and we don't need a delimiter, it'll simply signal the client when the bytes are finished writing
     Client.SendAsync(

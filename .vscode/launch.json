@@ -5,11 +5,13 @@
 	"version": "0.2.0",
 	"configurations": [
     {
-      "name": "Binary Interactive Debug",
+      "name": "Run Tests",
       "type": "PowerShell",
       "request": "launch",
+      "script": "Invoke-Pester -Output Detailed",
       "createTemporaryIntegratedConsole": true,
-      "attachDotnetDebugger": true
+      "attachDotnetDebugger": true,
+      "preLaunchTask": "Watch-Publish"
     }
 	]
 }
