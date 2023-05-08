@@ -1,7 +1,6 @@
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting.Client;
 using System.Management.Automation.Runspaces;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 
