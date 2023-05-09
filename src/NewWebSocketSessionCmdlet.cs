@@ -28,6 +28,12 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
   public string? Hostname = "localhost";
 
   /// <summary>
+  /// Specify to use plaintext http instead of ssl
+  /// </summary>
+  [Parameter()]
+  public SwitchParameter NoSSL;
+
+  /// <summary>
   /// EndProcessing override.
   /// </summary>
   protected override void BeginProcessing()
@@ -35,7 +41,8 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
     // Convert ConnectingTimeout value from seconds to milliseconds.
     _connectionInfo = new WebSocketConnectionInfo(
       port: Port ?? 7073,
-      hostname: Hostname ?? "localhost"
+      hostname: Hostname ?? "localhost",
+      useSSL: !NoSSL
     );
 
     _runspace = RunspaceFactory.CreateRunspace(

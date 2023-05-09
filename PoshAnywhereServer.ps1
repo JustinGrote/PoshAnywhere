@@ -253,6 +253,8 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
   } catch {
     Write-Host "WEBSOCKET: Error in Websocket Message Handling: $PSItem"
     throw
+  } finally {
+    $webSocket.CloseAsync([WebSocketCloseStatus]::InternalServerError, 'There was an error on the server side. Check the server side logs for details', [CancellationToken]::None).GetAwaiter().GetResult()
   }
 }
 

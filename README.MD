@@ -7,6 +7,8 @@ This module provides multiple additional transport mechanisms for PowerShell rem
 
 This is an implementation of the [Custom Transport Feature Introduced in PowerShell 7.3](https://github.com/PowerShell/PowerShell/pull/17011) using the [Named Pipe Connection Custom Transport Example](https://github.com/PaulHigin/NamedPipeConnection) as a reference.
 
+The primary inspiration for this transport is [UpTerm](https://upterm.dev/)
+
 ## PSRemoting Transport Basic Architecture
 
 PSRP effectively is a protocol that occurs by exchanging XML-encoded single line messages across a in/out pipe. This is known as an `OutOfProc` transport, which differs from the classic `WSMan` based transport. The transport layer handles how those messages get from the client to the server and vice versa. You don't really need to know much more about PSRP to build a transport layer other than it is sending single-line xml messages back and forth, much in the same way you don't need to understand the content of an HTTPS request to move that data back and forth via TCP.

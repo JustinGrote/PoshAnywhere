@@ -14,12 +14,13 @@ public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
   internal readonly int Port;
   internal readonly string Hostname;
   internal Uri WebSocketUri;
-  public WebSocketConnectionInfo(int port, string hostname = "localhost")
+  public WebSocketConnectionInfo(int port, string hostname = "localhost", bool useSSL = true)
   {
     // We want a client at this point but we don't want to connect until the transport manager initiates it
     Port = port;
     Hostname = hostname;
-    WebSocketUri = new($"ws://{Hostname}:{Port}/psrp");
+    string Protocol = useSSL ? "wss" : "ws";
+    WebSocketUri = new($"{Protocol}://{Hostname}:{Port}/psrp");
   }
 
   public override BaseClientSessionTransportManager CreateClientSessionTransportManager(
