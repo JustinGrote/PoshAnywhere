@@ -77,20 +77,6 @@ class WebSocketTransportManager : SimpleTransportManagerBase
     ).GetAwaiter().GetResult();
   }
 
-  public override void CreateAsync()
-  {
-    Client.ConnectAsync(WebSocketUri, default).GetAwaiter().GetResult();
-    base.CreateAsync();
-  }
-
-  public override void CloseAsync()
-  {
-    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
-  }
-
-  /// <summary>
-  /// Delegate that parses line-delimited PSRP messages from the transport on a separate thread
-  /// </summary>
   protected override async Task<string> ReceiveDataFromTransport()
   {
     using MemoryStream receiveStream = new();
@@ -107,5 +93,22 @@ class WebSocketTransportManager : SimpleTransportManagerBase
     // Rewind the memorystream so it can be read by readline
     receiveStream.Position = 0;
     return reader.ReadLine() ?? throw new InvalidDataException("Received null data from websocket, this should never happen.");
+  }
+
+  public override void CreateAsync()
+  {
+    Client.ConnectAsync(WebSocketUri, default).GetAwaiter().GetResult();
+    base.CreateAsync();
+  }
+
+  public override void CloseAsync()
+  {
+    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
+    base.CloseAsync();
+  }
+
+  protected override void CleanupConnection()
+  {
+    Client.Dispose();
   }
 }
