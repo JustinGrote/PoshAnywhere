@@ -1,13 +1,21 @@
 Describe 'Websocket Client' {
-  BeforeAll {
-    $SCRIPT:psanywhereServer = Start-ThreadJob -Scriptblock { ./PoshAnywhereServer.ps1 }
+  BeforeEach {
+    $SCRIPT:psanywhereServer = Start-ThreadJob -ScriptBlock {
+      Start-Transcript -Path TEMP:/PoshAnywhereServer.log -UseMinimalHeader
+      ./PoshAnywhereServer.ps1
+    }
     Import-Module $PSScriptRoot/bin/Debug/net7.0/publish/PoshAnywhere.dll
   }
+
   It 'Should connect to the server' {
-    New-WebSocketSession
-    | Should -Not -BeNullOrEmpty
+    $session = New-WebSocketSession -NoSsl
+    $session | Should -Not -BeNullOrEmpty
+    $session.State | Should -Be 'Opened'
   }
-}
-AfterAll {
-  Stop-Job $psanywhereServer
+
+
+
+  AfterEach {
+    Stop-Job $psanywhereServer
+  }
 }

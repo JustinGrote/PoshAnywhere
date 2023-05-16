@@ -1,5 +1,4 @@
 
-using System.ComponentModel;
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
@@ -30,7 +29,7 @@ class ActionTextWriter : TextWriter
 }
 
 /// <summary>
-/// This transport base lets you simply implement two functions: HandleDataFromClient and ReceiveDataFromTransport. It will handle the rest of the PSRP protocol for you. You may optionally initialize the additional CreateAsync, CloseAsync,
+/// This transport base lets you simply implement two functions: HandleDataFromClient and ReceiveDataFromTransport. It will handle the rest of the PSRP protocol for you. You may optionally initialize the additional CreateAsync, CloseAsync functions. If your transport has an issue that requires it to close, throw a PSRemotingTransportException, any other exceptions will be treated as a critical error and will crash the program.
 /// </summary>
 abstract class SimpleTransportManagerBase : ClientSessionTransportManagerBase
 {
@@ -78,9 +77,20 @@ abstract class SimpleTransportManagerBase : ClientSessionTransportManagerBase
     {
       // This is the normal expectation when the client closes the connection and should stop the task.
     }
+    catch (PSRemotingTransportException transportError)
+    {
+      RaiseErrorHandler(
+        new TransportErrorOccuredEventArgs(
+          transportError, TransportMethodEnum.CloseShellOperationEx
+        )
+      );
+      CloseAsync();
+      CleanupConnection();
+      Dispose();
+    }
     catch (Exception err)
     {
-      throw new InvalidOperationException($"Error receiving data from transport: {err.Message}. More detail in InnerException property", err);
+      throw new InvalidOperationException($"Critical Unhandled Non-TransportException occurred in custom transport: {err.Message}. More detail in InnerException property", err);
     }
   }
 }

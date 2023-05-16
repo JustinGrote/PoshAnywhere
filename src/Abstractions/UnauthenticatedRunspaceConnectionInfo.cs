@@ -27,4 +27,9 @@ public abstract class UnauthenticatedRunspaceConnectionInfo : RunspaceConnection
     get => throw new NotImplementedException("Cannot fetch CertificateThumbprint");
     set => throw new NotImplementedException("Cannot set CertificateThumbprint");
   }
+
+  /// <summary>
+  /// You may need to override this with an actual clone of your ConnectionInfo if you run into an edge case.
+  /// </summary>
+  public override RunspaceConnectionInfo Clone() => this;
 }

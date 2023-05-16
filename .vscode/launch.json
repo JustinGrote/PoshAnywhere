@@ -5,6 +5,13 @@
 	"version": "0.2.0",
 	"configurations": [
     {
+      "name": "PS: Binary Interactive",
+      "request": "launch",
+      "type": "PowerShell",
+      "attachDotnetDebugger": true,
+      "createTemporaryIntegratedConsole": true
+    },
+    {
       "name": "Run Tests",
       "type": "PowerShell",
       "request": "launch",
