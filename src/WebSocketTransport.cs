@@ -49,11 +49,11 @@ public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
   }
 }
 
-class WebSocketTransportManager : ClientSessionTransportManagerBase
+class WebSocketTransportManager : SimpleTransportManagerBase
 {
   private readonly Uri WebSocketUri;
   private readonly Guid InstanceId;
-  private readonly ClientWebSocket client = new();
+  private readonly ClientWebSocket Client = new();
 
   /// <summary>
   /// Instantiates a new WebSocket transport
@@ -66,109 +66,46 @@ class WebSocketTransportManager : ClientSessionTransportManagerBase
     WebSocketUri = webSocketUri;
   }
 
+  protected override void HandleDataFromClient(string data)
+  {
+    // We do not add a newline here, it will be added on the other side when passed to the named pipe, because websockets has the concept of messages and we don't need a delimiter, it'll simply signal the client when the bytes are finished writing
+    Client.SendAsync(
+      Encoding.UTF8.GetBytes(data),
+      WebSocketMessageType.Text,
+      true,
+      default
+    ).GetAwaiter().GetResult();
+  }
+
   public override void CreateAsync()
   {
-    client.ConnectAsync(WebSocketUri, default).GetAwaiter().GetResult();
-    SetMessageWriter(new WebSocketTextWriter(client));
-    StartReaderThread(client);
+    Client.ConnectAsync(WebSocketUri, default).GetAwaiter().GetResult();
+    base.CreateAsync();
   }
 
   public override void CloseAsync()
   {
-    client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
-  }
-
-  /// <summary>
-  /// Starts dedicated streamReader thread for messages coming from the stream
-  /// </summary>
-  private void StartReaderThread(ClientWebSocket client)
-  {
-    // The lambda is a workaround to Threads not supporting generic syntax for parameters
-    // Ref: https://stackoverflow.com/questions/3360555/how-to-pass-parameters-to-threadstart-method-in-thread
-    Thread processReaderThread = new(() => ProcessReaderThread(client))
-    {
-      IsBackground = true,
-      Name = InstanceId.ToString()
-    };
-
-    processReaderThread.Start();
+    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
   }
 
   /// <summary>
   /// Delegate that parses line-delimited PSRP messages from the transport on a separate thread
   /// </summary>
-  private void ProcessReaderThread(ClientWebSocket client)
+  protected override async Task<string> ReceiveDataFromTransport()
   {
-    try
+    using MemoryStream receiveStream = new();
+    using StreamReader reader = new(receiveStream);
+    // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
+    WebSocketReceiveResult receiveResult;
+    do
     {
-      // Send one fragment.
-      SendOneItem();
+      byte[] buffer = new byte[8194];
 
-      WebSocketReceiveResult receiveResult;
-      // Start reader loop.
-      while (true)
-      {
-        using MemoryStream receiveStream = new();
-        StreamReader reader = new(receiveStream);
-
-        do
-        {
-          // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
-          byte[] buffer = new byte[8194];
-          receiveResult = client.ReceiveAsync(buffer, default).GetAwaiter().GetResult();
-          receiveStream.Write(buffer, 0, receiveResult.Count);
-        } while (!receiveResult.EndOfMessage);
-
-        // Rewind the memorystream so it can be read by readline
-        receiveStream.Position = 0;
-        var data = reader.ReadLine() ?? throw new InvalidDataException("Received null data from websocket, this should never happen.");
-
-        // Console.WriteLine($"WEBSOCKET TO CLIENT: {data}");
-        HandleDataReceived(data);
-      }
-    }
-    catch (ObjectDisposedException)
-    {
-      Console.WriteLine("Reader thread ended.");
-      // Normal reader thread end.
-    }
-    catch (Exception e)
-    {
-      throw new InvalidOperationException($"Error in reader thread: {e.Message}");
-    }
-  }
-
-  protected override void CleanupConnection()
-  {
-    // client.Dispose();
-  }
-}
-
-/// <summary>
-/// Sends to the attached websocket when written to
-/// </summary>
-class WebSocketTextWriter : TextWriter
-{
-  private ClientWebSocket Client { get; }
-  public override Encoding Encoding => Encoding.UTF8;
-
-  public WebSocketTextWriter(ClientWebSocket client) => Client = client;
-
-  public override void WriteLine(string? data)
-  {
-    if (data is null)
-    {
-      return;
-    }
-
-    // Console.WriteLine($"WEBSOCKET FROM CLIENT: {data}");
-
-    // We do not add a newline here, it will be added on the other side when passed to the named pipe, because websockets has the concept of messages and we don't need a delimiter, it'll simply signal the client when the bytes are finished writing
-    Client.SendAsync(
-      Encoding.GetBytes(data),
-      WebSocketMessageType.Text,
-      true,
-      default
-    ).GetAwaiter().GetResult();
+      receiveResult = await Client.ReceiveAsync(buffer, default);
+      receiveStream.Write(buffer, 0, receiveResult.Count);
+    } while (!receiveResult.EndOfMessage);
+    // Rewind the memorystream so it can be read by readline
+    receiveStream.Position = 0;
+    return reader.ReadLine() ?? throw new InvalidDataException("Received null data from websocket, this should never happen.");
   }
 }

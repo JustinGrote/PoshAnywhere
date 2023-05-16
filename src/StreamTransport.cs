@@ -37,33 +37,57 @@ public class StreamConnectionInfo : UnauthenticatedRunspaceConnectionInfo
 
 class StreamTransportManager : ClientSessionTransportManagerBase
 {
-  private readonly Stream Stream;
+  private readonly StreamReader Reader;
+  private readonly StreamWriter Writer;
+  /// <summary>
+  /// An optional stream that, if provided, will be disposed
+  /// </summary>
+  private readonly Stream? Stream;
+
+  /// <summary>
+  /// When specified, the stream will disposed after the PSRP session is closed. This can be useful if your transport proves a new stream each time
+  /// </summary>
+  public bool DisposeStream;
+  public readonly string SessionName;
+
   private readonly Guid InstanceId;
 
   /// <summary>
   /// Instantiates a new Stream Transport. To the <paramref name="stream"/> parameter, provide a bidirectional UTF8-encoded stream that sends and accepts PSRP single line XML messages
   /// </summary>
-  /// <param name="instanceId"></param>
-  /// <param name="cryptoHelper"></param>
-  /// <param name="stream"></param>
-  internal StreamTransportManager(Guid instanceId, string _, PSRemotingCryptoHelper cryptoHelper, Stream stream) : base(instanceId, cryptoHelper)
+  internal StreamTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, StreamReader reader, StreamWriter writer) : base(instanceId, cryptoHelper)
   {
     InstanceId = instanceId;
+    SessionName = sessionName;
+    Reader = reader;
+    writer.AutoFlush = true;
+    Writer = writer;
+  }
+
+  internal StreamTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, Stream stream) : this(instanceId, sessionName, cryptoHelper, new(stream), new(stream))
+  {
     Stream = stream;
   }
+
   public override void CreateAsync()
   {
-    SetMessageWriter(new StreamWriter(Stream)
-    {
-      AutoFlush = true
-    });
-    StartReaderThread(new StreamReader(Stream));
+    SetMessageWriter(Writer);
+    StartReaderThread(Reader);
   }
 
   public override void CloseAsync()
   {
-    Stream.Dispose();
-    base.CloseAsync();
+    Writer.Flush();
+  }
+
+  protected override void CleanupConnection()
+  {
+    Writer.Dispose();
+    Reader.Dispose();
+    if (DisposeStream && Stream is not null)
+    {
+      Stream.Dispose();
+    }
   }
 
   /// <summary>
@@ -111,10 +135,5 @@ class StreamTransportManager : ClientSessionTransportManagerBase
     {
       throw new NotImplementedException($"Error in reader thread: {e.Message}");
     }
-  }
-
-  protected override void CleanupConnection()
-  {
-    Stream.Dispose();
   }
 }
