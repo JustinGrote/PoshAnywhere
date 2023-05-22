@@ -1,3 +1,4 @@
+using System.Management.Automation;
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
@@ -18,9 +19,13 @@ public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
 {
   internal readonly WebSocketTarget WebSocketTarget;
   internal Uri WebSocketUri => WebSocketTarget.WebSocketUri;
-  public WebSocketConnectionInfo(int port, string hostname = "localhost", bool useSSL = true)
+  internal readonly CancellationToken CancellationToken;
+  internal readonly PSCmdlet PSCmdlet;
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true, CancellationToken cancellationToken = default)
   {
     WebSocketTarget = new(hostname, port, useSSL);
+    CancellationToken = cancellationToken;
+    PSCmdlet = psCmdlet;
   }
 
   public override BaseClientSessionTransportManager CreateClientSessionTransportManager(
@@ -31,7 +36,7 @@ public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
     instanceId,
     sessionName,
     cryptoHelper,
-    WebSocketUri
+    this
   );
 
   public override string ComputerName
@@ -46,16 +51,22 @@ class WebSocketTransportManager : SimpleTransportManagerBase
   private readonly Uri WebSocketUri;
   private readonly Guid InstanceId;
   private readonly ClientWebSocket Client = new();
+  private readonly WebSocketConnectionInfo ConnectionInfo;
+  private readonly CancellationToken CancellationToken;
+  private readonly PSCmdlet PSCmdlet;
 
   /// <summary>
   /// Instantiates a new WebSocket transport
   /// </summary>
   /// <param name="instanceId"></param>
   /// <param name="cryptoHelper"></param>
-  internal WebSocketTransportManager(Guid instanceId, string _, PSRemotingCryptoHelper cryptoHelper, Uri webSocketUri) : base(instanceId, cryptoHelper)
+  internal WebSocketTransportManager(Guid instanceId, string _, PSRemotingCryptoHelper cryptoHelper, WebSocketConnectionInfo connectionInfo) : base(instanceId, cryptoHelper)
   {
     InstanceId = instanceId;
-    WebSocketUri = webSocketUri;
+    ConnectionInfo = connectionInfo;
+    WebSocketUri = ConnectionInfo.WebSocketUri;
+    CancellationToken = ConnectionInfo.CancellationToken;
+    PSCmdlet = ConnectionInfo.PSCmdlet;
   }
 
   private Task? activeHandleDataTask;
@@ -74,7 +85,7 @@ class WebSocketTransportManager : SimpleTransportManagerBase
       Encoding.UTF8.GetBytes(data),
       WebSocketMessageType.Text,
       true,
-      default
+      CancellationToken
     );
   }
 
@@ -87,13 +98,13 @@ class WebSocketTransportManager : SimpleTransportManagerBase
     do
     {
       byte[] buffer = new byte[8194];
-      receiveResult = await Client.ReceiveAsync(buffer, default);
-      receiveStream.Write(buffer, 0, receiveResult.Count);
+      receiveResult = await Client.ReceiveAsync(buffer, CancellationToken);
+      await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), CancellationToken);
     } while (!receiveResult.EndOfMessage);
 
     // Rewind the memorystream so it can be read by readline
     receiveStream.Position = 0;
-    var message = await reader.ReadLineAsync();
+    var message = await reader.ReadLineAsync(CancellationToken);
 
     string errMessage = $"Websocket Server sent a close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}";
 
@@ -113,18 +124,59 @@ class WebSocketTransportManager : SimpleTransportManagerBase
 
   public override void CreateAsync()
   {
-    Client.ConnectAsync(WebSocketUri, default).GetAwaiter().GetResult();
-    base.CreateAsync();
+    try
+    {
+      Client.ConnectAsync(WebSocketUri, CancellationToken).GetAwaiter().GetResult();
+      base.CreateAsync();
+    }
+    catch (Exception ex)
+    {
+      HandleWebSocketError(ex, true);
+    }
   }
 
   public override void CloseAsync()
   {
-    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", default);
-    base.CloseAsync();
+    try
+    {
+      Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", new CancellationTokenSource(3000).Token);
+      base.CloseAsync();
+    }
+    catch (Exception ex)
+    {
+      HandleWebSocketError(ex);
+    }
   }
 
   protected override void CleanupConnection()
   {
-    Client.Dispose();
+    try
+    {
+      Client.Dispose();
+    }
+    catch (Exception ex)
+    {
+      HandleWebSocketError(ex);
+    }
+  }
+
+  /// <summary>
+  /// Transports expect very specific exception type to be handled gracefully, but we also want to inform our calling PSCmdlet if still in the connecting phase
+  /// </summary>
+  private void HandleWebSocketError(Exception exception, bool throwCmdletError = false)
+  {
+    PSRemotingTransportException transportException = new($"Websocket Transport Error: {exception.Message} - {exception.InnerException?.Message}", exception);
+
+    if (throwCmdletError)
+    {
+      PSCmdlet.ThrowTerminatingError(new ErrorRecord(
+        transportException,
+        "WebsocketTransportError",
+        ErrorCategory.ConnectionError,
+        this
+      ));
+    }
+
+    RaiseErrorHandler(new TransportErrorOccuredEventArgs(transportException, TransportMethodEnum.CloseShellOperationEx));
   }
 }
