@@ -10,8 +10,9 @@ namespace PoshTransports;
 [OutputType(typeof(PSSession))]
 public sealed class NewWebSocketSessionCmdlet : PSCmdlet
 {
-  private WebSocketConnectionInfo? _connectionInfo;
-  private Runspace? _runspace;
+  private WebSocketConnectionInfo? ConnectionInfo;
+  private Runspace? Runspace;
+  private readonly CancellationTokenSource CancelSource = new();
 
   /// <summary>
   /// The websocket port to connect to.
@@ -39,50 +40,68 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
   protected override void BeginProcessing()
   {
     // Convert ConnectingTimeout value from seconds to milliseconds.
-    _connectionInfo = new WebSocketConnectionInfo(
-      port: Port ?? 7073,
-      hostname: Hostname ?? "localhost",
-      useSSL: !NoSSL
+    ConnectionInfo = new WebSocketConnectionInfo(
+      this,
+      Port ?? 7073,
+      Hostname ?? "localhost",
+      !NoSSL,
+      CancelSource.Token
     );
 
-    _runspace = RunspaceFactory.CreateRunspace(
-      connectionInfo: _connectionInfo,
-      host: Host,
-      typeTable: TypeTable.LoadDefaultTypeFiles(),
-      applicationArguments: null,
-      name: $"WebSocket-{Hostname}:{Port}"
+    Runspace = RunspaceFactory.CreateRunspace(
+      ConnectionInfo,
+      Host,
+      TypeTable.LoadDefaultTypeFiles(),
+      null,
+      $"WebSocket-{Hostname}:{Port}"
     );
 
     // Wait for runspace to be usable
     ManualResetEvent waitForRunspaceUsable = new(false);
     EventHandler<RunspaceStateEventArgs>? handler = null;
-    _runspace.StateChanged += handler = (source, stateEventArgs) =>
+    Runspace.StateChanged += handler = (source, stateEventArgs) =>
     {
       switch (stateEventArgs.RunspaceStateInfo.State)
       {
         case RunspaceState.Opened:
         case RunspaceState.Closed:
         case RunspaceState.Broken:
-          if (_runspace is null) { break; }
-          _runspace.StateChanged -= handler;
+          if (Runspace is null) { break; }
+          Runspace.StateChanged -= handler;
           waitForRunspaceUsable.Set();
           break;
       }
     };
 
-    WriteVerbose($"Connecting to websocket host: {_connectionInfo.WebSocketUri}");
-
-    _runspace.OpenAsync();
+    WriteVerbose($"Connecting to websocket host: {ConnectionInfo.WebSocketUri}");
+    try
+    {
+      Runspace.OpenAsync();
+    }
+    catch (Exception err)
+    {
+      ThrowTerminatingError(
+        new ErrorRecord(
+          err,
+          "WebSocketTransportError",
+          ErrorCategory.ConnectionError,
+          ConnectionInfo
+        )
+      );
+    }
     // We use this instead of Open() to make this cmdlet cancellable
     while (!waitForRunspaceUsable.WaitOne(500)) { }
 
-    WriteObject(
-      PSSession.Create(
-        runspace: _runspace,
-        transportName: "WebSocket",
-        psCmdlet: this
-      )
-    );
+    if (Runspace.RunspaceAvailability != RunspaceAvailability.None)
+    {
+      WriteObject(
+        PSSession.Create(
+          runspace: Runspace,
+          transportName: "WebSocket",
+          psCmdlet: this
+        )
+      );
+    }
   }
 
   /// <summary>
@@ -90,6 +109,8 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
   /// </summary>
   protected override void StopProcessing()
   {
-    _runspace?.Dispose();
+    WriteVerbose("Cancelling New-WebSocketSession");
+    CancelSource.Cancel();
+    Runspace?.Dispose();
   }
 }
