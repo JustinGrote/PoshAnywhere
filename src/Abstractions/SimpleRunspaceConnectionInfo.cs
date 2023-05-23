@@ -53,10 +53,17 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   public async Task<PSSession> ConnectAsync()
   {
     Runspace Runspace = CreateRunspace();
-    Runspace.OpenAsync();
-    var connectedRunspace = await RunspaceConnectedTask;
+    try
+    {
+      Runspace.OpenAsync();
+      await RunspaceConnectedTask;
+    }
+    catch (TaskCanceledException cancelEx)
+    {
+      throw new PipelineStoppedException(cancelEx.Message, cancelEx);
+    }
     return PSSession.Create(
-      runspace: connectedRunspace,
+      runspace: Runspace,
       transportName: "WebSocket",
       psCmdlet: PSCmdlet
     );
@@ -64,5 +71,9 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
 
   public PSSession Connect() => ConnectAsync().GetAwaiter().GetResult();
 
-  public void Cancel() => CancellationTokenSource.Cancel();
+  public void Cancel()
+  {
+    CancellationTokenSource.Cancel();
+    CreateRunspaceTaskCompletionSource.TrySetCanceled(CancellationToken);
+  }
 }
