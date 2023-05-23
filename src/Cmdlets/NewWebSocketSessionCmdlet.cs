@@ -32,13 +32,21 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
   [Parameter()]
   public SwitchParameter NoSSL;
 
+  /// <summary>
+  /// Name of the PSSession. Use this to distinguish connections
+  /// </summary>
+  [Parameter()]
+  [ValidateNotNullOrEmpty]
+  public string? Name;
+
   protected override void BeginProcessing()
   {
     ConnectionInfo = new WebSocketConnectionInfo(
       this,
       Port ?? 7073,
       Hostname ?? "localhost",
-      !NoSSL
+      !NoSSL,
+      Name
     );
 
     WriteObject(

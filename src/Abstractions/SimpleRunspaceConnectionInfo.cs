@@ -9,6 +9,7 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   internal readonly TaskCompletionSource<Runspace> CreateRunspaceTaskCompletionSource = new();
   private readonly CancellationTokenSource CancellationTokenSource = new();
   private readonly PSCmdlet PSCmdlet;
+  private readonly string? Name;
   public CancellationToken CancellationToken => CancellationTokenSource.Token;
 
   /// <summary>
@@ -16,9 +17,10 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   /// </summary>
   public Task<Runspace> RunspaceConnectedTask => CreateRunspaceTaskCompletionSource.Task;
 
-  protected SimpleRunspaceConnectionInfo(PSCmdlet psCmdlet)
+  protected SimpleRunspaceConnectionInfo(PSCmdlet psCmdlet, string? name)
   {
     PSCmdlet = psCmdlet;
+    Name = name;
     CancellationToken.Register(() => CreateRunspaceTaskCompletionSource.TrySetCanceled());
   }
 
@@ -29,7 +31,9 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
     Runspace Runspace = RunspaceFactory.CreateRunspace(
       this,
       PSCmdlet.Host,
-      TypeTable.LoadDefaultTypeFiles()
+      TypeTable.LoadDefaultTypeFiles(),
+      null,
+      Name
     );
 
     EventHandler<RunspaceStateEventArgs>? handler = null;

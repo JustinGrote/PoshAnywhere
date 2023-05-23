@@ -18,7 +18,7 @@ public class WebSocketConnectionInfo : SimpleRunspaceConnectionInfo
   internal readonly WebSocketTarget WebSocketTarget;
   internal Uri WebSocketUri => WebSocketTarget.WebSocketUri;
 
-  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true) : base(psCmdlet)
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true, string? name = null) : base(psCmdlet, name)
   {
     WebSocketTarget = new(hostname, port, useSSL);
   }

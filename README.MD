@@ -72,6 +72,12 @@ sequenceDiagram
 
 Even though the CreateAsync and ConnectAsync have that name, [their callbacks are no-opd](https://github.com/PowerShell/PowerShell/blob/c444645b0941d73dc769f0bba6ab70d317bd51a9/src/System.Management.Automation/engine/remoting/client/remotingprotocolimplementation.cs#L123-L144), so just treat them like sync operations
 
+### Making this simpler: TransportProvider
+
+To implement a custom transport as-is, you currenly need a knowledge of streams, textwriters, abstract classes, and need to deal with a lot of connection setup and teardown scenarios.
+
+To simplify the implementation process I created `TransportProvider` and `SimpleRunspaceConnectionInfo`. Now to create a custom transport, you simple implement two handler methods for sending and receiving messages, and optional setup/teardown hooks.
+
 ## Server Side Implementation
 
 On the server side, there is no explicit implementation, your Transport Manager simply needs to interact with whatever PowerShell process exists on the other side and pass the messages. Every PowerShell 5.1+ process has an associated named pipe for PSRP as an IPC transport, so this naturally is an easy entrypoint. The name of the pipe is a consistent derivation of the process ID and its start time that can be predicted, but it can also be explicitly named by starting PowerShell with the `-CustomPipeName` parameter. PowerShell also has an undocumented `-Server` parameter that allows the stdin/stdout of the process to be used as the channels for PSRP, which can be useful if you want to spawn a new process and not work within an existing process.
