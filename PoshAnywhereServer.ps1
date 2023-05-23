@@ -1,4 +1,5 @@
 #Exposes the Powershell Remoting Protocol via a TCP Port
+using namespace System.Management.Automation
 using namespace System.Management.Automation.Runspaces
 using namespace System.Net.Sockets
 using namespace System.Net.WebSockets
@@ -12,11 +13,18 @@ using namespace System.Text
 
 
 param (
-  #Use a raw tcp listener instead of a websocket
-  [Switch]$TCP,
+  #Allow non-localhost connections. This may require additional permissions
   [Parameter(ParameterSetName = 'Server')][Switch]$AllowRemoteConnections,
   #How large to make the buffer for websockets. A larger buffer will have better performance but use more memory.
-  [int]$BufferSize = 8192
+  [int]$BufferSize = 8192,
+  #Which port to listen on, defaults to 7073
+  [int]$Port,
+  #Listen to a specific PowerShell process instead of the currently running one.
+  [int]$PowerShellProcessId,
+  #How long in milliseconds to wait for the named pipe to connect. This should almost always be pretty much immediately so the default is 500ms
+  [int]$NamedPipeConnectTimeout,
+  #Use a raw tcp listener instead of a websocket
+  [Switch]$TCP
 )
 
 if ($AllowRemoteConnections) { $ListenAddress = '0.0.0.0' }
@@ -28,16 +36,28 @@ function Start-WebSocketNamedPipeServer ([ValidateNotNullOrEmpty()][int]$Port = 
   #>
   try {
     $server = Start-WebSocketServer -Port $Port
+    $pipeStream = Connect-PSRemotingNamedPipe
     while ($true) {
-      $pipeStream = Connect-PSRemotingNamedPipe
       Receive-PSRPStreamSession -server $server -Stream $pipeStream
+      Write-Verbose 'WEBSOCKET: Session Ended. Listening for new connection.'
     }
-  } catch { throw } finally {
-    Write-Verbose 'WEBSOCKET: Stopping Server...'
-    $server.Stop()
+  } catch {
+    throw
+  } finally {
+    if ($server) {
+      Write-Verbose 'WEBSOCKET: Stopping Server...'
+      $server.Stop()
+    }
+
+    if ($pipeStream) {
+      Write-Verbose 'Closing and disposing named pipe connection'
+      $pipeStream.Close()
+      $pipeStream.Dispose()
+    }
     Write-Verbose 'WEBSOCKET: Server Stopped'
   }
 }
+
 function Get-PSRemotingNamedPipe() {
   <#
   .SYNOPSIS
@@ -82,8 +102,20 @@ function Connect-PSRemotingNamedPipe([String]$Name = (Get-PSRemotingNamedPipe -P
     [PipeDirection]::InOut, #PipeDirection direction
     [PipeOptions]::Asynchronous #PipeOptions options
   )
-  Write-Verbose "Connecting to PowerShell Named Pipe $Name on $ComputerName..."
-  $pipeclient.ConnectAsync() | Wait-Task
+  Write-Verbose "Connecting to PowerShell Named Pipe $Name on ($ComputerName)..."
+  try {
+    $pipeclient.Connect($NamedPipeConnectTimeout)
+  } catch [TimeoutException] {
+    $pipeclient.Dispose()
+    $PSCmdlet.ThrowTerminatingError(
+      [ErrorRecord]::new(
+        [TimeoutException]::new("Timed out connecting to named pipe $Name on ($ComputerName). The named pipe is probably busy, disconnected, or no longer exists"),
+        'NamedPipeClientStream.TimeoutException',
+        [ErrorCategory]::OperationTimeout,
+        $pipeclient
+      )
+    )
+  }
   Write-Verbose "CONNECTED to Powershell Named Pipe $Name"
   return $pipeClient
 }
@@ -131,11 +163,7 @@ function Start-WebSocketServer ([ValidateNotNullOrEmpty()][int]$Port = 7073) {
 
 function Receive-PSRPStreamSession($server, [Stream]$Stream) {
 
-  $contextTask = $server.GetContextAsync()
-
-  #This loop allows Ctrl-C to keep working
-  while ($contextTask.Wait(500) -ne $true) {}
-  $context = $contextTask | Wait-Task
+  $context = $server.GetContextAsync() | Wait-Task
 
   if (-not $context.Request.IsWebSocketRequest) {
     Write-Verbose 'WEBSOCKET: non-websocket request received. Disconnecting'
@@ -157,7 +185,9 @@ function Receive-PSRPStreamSession($server, [Stream]$Stream) {
     continue
   } finally {
     Write-Verbose "WEBSOCKET: Connection CLOSE: $($context.Request.RemoteEndPoint)"
-    $websocket.Dispose()
+    if ($websocket) {
+      $websocket.Dispose()
+    }
   }
 }
 
@@ -215,7 +245,7 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
 
           if ($result.MessageType -eq [WebSocketMessageType]::Close) {
             Write-Verbose 'WEBSOCKET: Received Close Request from Client. Responding with NormalClosure'
-            $websocket.CloseAsync('NormalClosure', [String]::Empty, [CancellationToken]::None) | Wait-Task
+            $websocket.CloseAsync('NormalClosure', [String]::Empty, [CancellationToken]::None) | Wait-Task | Out-Null
             return
           }
 
@@ -254,24 +284,29 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
         $fromPipeTask = $null
       }
     }
+  } catch [WebSocketException] {
+    $PSCmdlet.WriteError($PSItem)
+    return
   } catch {
-    Write-Error "WEBSOCKET: Error in Websocket Message Handling: $PSItem"
-    throw
-  } finally {
+    $PSCmdlet.ThrowTerminatingError($PSItem)
     $webSocket.CloseAsync([WebSocketCloseStatus]::InternalServerError, 'There was an error on the server side. Check the server side logs for details', [CancellationToken]::None) | Wait-Task | Out-Null
   }
 }
 
 filter Wait-Task ([int]$Timeout = 500) {
-  #This makes the wait cancellable by Ctrl-C
-  while (-not $PSItem.Wait($Timeout)) {}
-  $PSItem.GetAwaiter().GetResult()
-}
+  $task = $PSItem
 
+  #This makes the wait cancellable by Ctrl-C
+  try {
+    while (-not $task.Wait($Timeout)) {}
+  } catch [AggregateException] {
+    throw $task.Exception.InnerException
+  }
+  return $task.Result
+}
 
 #region main
 try {
-
   if ($TCP) {
     $pipeClient = Connect-PSRemotingNamedPipe
     $tcpClient = Start-PSRemotingTCPListener
@@ -286,9 +321,9 @@ try {
   Start-WebSocketNamedPipeServer
 
 } catch { Write-Error $PSItem } finally {
-  $pipeClient.Close()
-  $pipeClient.Dispose()
   if ($TCP) {
+    $pipeClient.Close()
+    $pipeClient.Dispose()
     $tcpClient.Close()
     $tcpClient.Dispose()
     if ($tcpListener) { $tcpListener.Stop() }

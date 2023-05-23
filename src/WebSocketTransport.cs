@@ -12,31 +12,26 @@ public record WebSocketTarget(string Hostname, int Port, bool UseSSL)
   public string Protocol => UseSSL ? "wss" : "ws";
   public Uri WebSocketUri => new($"{Protocol}://{Hostname}:{Port}/psrp");
 }
-/// <summary>
-/// Attaches to a TCP port where PS remoting messages are provided
-/// </summary>
-public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
+
+public class WebSocketConnectionInfo : SimpleRunspaceConnectionInfo
 {
   internal readonly WebSocketTarget WebSocketTarget;
   internal Uri WebSocketUri => WebSocketTarget.WebSocketUri;
-  internal readonly CancellationToken CancellationToken;
-  internal readonly PSCmdlet PSCmdlet;
-  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true, CancellationToken cancellationToken = default)
+
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true) : base(psCmdlet)
   {
     WebSocketTarget = new(hostname, port, useSSL);
-    CancellationToken = cancellationToken;
-    PSCmdlet = psCmdlet;
   }
 
   public override BaseClientSessionTransportManager CreateClientSessionTransportManager(
     Guid instanceId,
     string sessionName,
     PSRemotingCryptoHelper cryptoHelper
-  ) => new WebSocketTransportManager(
+  ) => new SimpleTransportManager(
     instanceId,
-    sessionName,
     cryptoHelper,
-    this
+    this,
+    new WebSocketTransport(this)
   );
 
   public override string ComputerName
@@ -46,31 +41,21 @@ public class WebSocketConnectionInfo : UnauthenticatedRunspaceConnectionInfo
   }
 }
 
-class WebSocketTransportManager : SimpleTransportManagerBase
+class WebSocketTransport : TransportProvider
 {
-  private readonly Uri WebSocketUri;
-  private readonly Guid InstanceId;
   private readonly ClientWebSocket Client = new();
-  private readonly WebSocketConnectionInfo ConnectionInfo;
-  private readonly CancellationToken CancellationToken;
-  private readonly PSCmdlet PSCmdlet;
+  private Task? activeHandleDataTask;
 
-  /// <summary>
-  /// Instantiates a new WebSocket transport
-  /// </summary>
-  /// <param name="instanceId"></param>
-  /// <param name="cryptoHelper"></param>
-  internal WebSocketTransportManager(Guid instanceId, string _, PSRemotingCryptoHelper cryptoHelper, WebSocketConnectionInfo connectionInfo) : base(instanceId, cryptoHelper)
+  private readonly WebSocketConnectionInfo ConnectionInfo;
+  CancellationToken CancellationToken => ConnectionInfo.CancellationToken;
+  Uri WebSocketUri => ConnectionInfo.WebSocketUri;
+
+  public WebSocketTransport(WebSocketConnectionInfo connectionInfo)
   {
-    InstanceId = instanceId;
     ConnectionInfo = connectionInfo;
-    WebSocketUri = ConnectionInfo.WebSocketUri;
-    CancellationToken = ConnectionInfo.CancellationToken;
-    PSCmdlet = ConnectionInfo.PSCmdlet;
   }
 
-  private Task? activeHandleDataTask;
-  protected override void HandleDataFromClient(string data)
+  public void HandleDataFromClient(string data)
   {
     // We do not add a newline here, it will be added on the other side when passed to the named pipe, because websockets has the concept of messages and we don't need a delimiter, it'll simply signal the client when the bytes are finished writing
 
@@ -89,94 +74,67 @@ class WebSocketTransportManager : SimpleTransportManagerBase
     );
   }
 
-  protected override async Task<string> ReceiveDataFromTransport()
+  public async Task<string> ReceiveDataFromTransport()
   {
-    using MemoryStream receiveStream = new();
-    using StreamReader reader = new(receiveStream);
-    // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
-    WebSocketReceiveResult receiveResult;
-    do
+    try
     {
-      byte[] buffer = new byte[8194];
-      receiveResult = await Client.ReceiveAsync(buffer, CancellationToken);
-      await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), CancellationToken);
-    } while (!receiveResult.EndOfMessage);
+      using MemoryStream receiveStream = new();
+      using StreamReader reader = new(receiveStream);
+      // Incoming data should be UTF8 encoded string, so we can just pass that to handleDataReceived which doesn't expect a complete PSRP message as far as I can tell
+      WebSocketReceiveResult receiveResult;
+      do
+      {
+        byte[] buffer = new byte[8194];
+        receiveResult = await Client.ReceiveAsync(buffer, CancellationToken);
+        await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), CancellationToken);
+      } while (!receiveResult.EndOfMessage);
 
-    // Rewind the memorystream so it can be read by readline
-    receiveStream.Position = 0;
-    var message = await reader.ReadLineAsync(CancellationToken);
+      // Rewind the memorystream so it can be read by readline
+      receiveStream.Position = 0;
+      var message = await reader.ReadLineAsync(CancellationToken);
 
-    string errMessage = $"Websocket Server sent a close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}";
+      string errMessage = $"Websocket Server sent a close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}";
 
-    return message ?? throw receiveResult.CloseStatus switch
-    {
-      WebSocketCloseStatus.NormalClosure => new PSRemotingTransportException("Server sent a NormalClosure, these are initiated from the client so this should never happen"),
-      WebSocketCloseStatus.Empty => new PSRemotingTransportException("Received null data from websocket, this should never happen."),
-      _ => new PSRemotingTransportException(
-        "Websocket Unexpectedly Closed, see InnerException for details",
-        new WebSocketException(
-          WebSocketError.ConnectionClosedPrematurely,
-          $"Server sent a unexpected close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}"
+      return message ?? throw receiveResult.CloseStatus switch
+      {
+        WebSocketCloseStatus.NormalClosure => new PSRemotingTransportException("Server sent a NormalClosure, these are initiated from the client so this should never happen"),
+        WebSocketCloseStatus.Empty => new PSRemotingTransportException("Received null data from websocket, this should never happen."),
+        _ => new WebSocketException(
+            WebSocketError.ConnectionClosedPrematurely,
+            $"Server sent a unexpected close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}"
         )
-      )
-    };
+      };
+    }
+    catch (WebSocketException websocketEx)
+    {
+      throw new PSRemotingTransportException($"Websocket Error while receiving data: {websocketEx.Message}. See InnerException property for more detail.", websocketEx);
+    }
   }
 
-  public override void CreateAsync()
+  public void CreateConnection()
   {
     try
     {
       Client.ConnectAsync(WebSocketUri, CancellationToken).GetAwaiter().GetResult();
-      base.CreateAsync();
     }
-    catch (Exception ex)
+    catch (WebSocketException websocketEx)
     {
-      HandleWebSocketError(ex, true);
+      throw new PSRemotingTransportException($"Websocket Error while connecting: {websocketEx.Message}. See InnerException property for more detail.", websocketEx);
     }
   }
 
-  public override void CloseAsync()
+  public void CloseConnection()
   {
-    try
-    {
-      Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", new CancellationTokenSource(3000).Token);
-      base.CloseAsync();
-    }
-    catch (Exception ex)
-    {
-      HandleWebSocketError(ex);
-    }
+    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", new CancellationTokenSource(3000).Token);
   }
 
-  protected override void CleanupConnection()
+  protected void CleanupConnection()
   {
-    try
-    {
-      Client.Dispose();
-    }
-    catch (Exception ex)
-    {
-      HandleWebSocketError(ex);
-    }
+    Client.Dispose();
   }
 
-  /// <summary>
-  /// Transports expect very specific exception type to be handled gracefully, but we also want to inform our calling PSCmdlet if still in the connecting phase
-  /// </summary>
-  private void HandleWebSocketError(Exception exception, bool throwCmdletError = false)
+  public void Dispose()
   {
-    PSRemotingTransportException transportException = new($"Websocket Transport Error: {exception.Message} - {exception.InnerException?.Message}", exception);
-
-    if (throwCmdletError)
-    {
-      PSCmdlet.ThrowTerminatingError(new ErrorRecord(
-        transportException,
-        "WebsocketTransportError",
-        ErrorCategory.ConnectionError,
-        this
-      ));
-    }
-
-    RaiseErrorHandler(new TransportErrorOccuredEventArgs(transportException, TransportMethodEnum.CloseShellOperationEx));
+    CleanupConnection();
   }
 }
