@@ -8,10 +8,8 @@ namespace PoshTransports;
 /// </summary>
 [Cmdlet(VerbsCommon.New, "WebSocketSession")]
 [OutputType(typeof(PSSession))]
-public sealed class NewWebSocketSessionCmdlet : PSCmdlet
+public sealed class NewWebSocketSessionCmdlet : SimpleTransportCmdletBase
 {
-  private WebSocketConnectionInfo? ConnectionInfo;
-
   /// <summary>
   /// The websocket port to connect to.
   /// </summary>
@@ -52,13 +50,5 @@ public sealed class NewWebSocketSessionCmdlet : PSCmdlet
     WriteObject(
       ConnectionInfo.Connect()
     );
-  }
-
-  /// <summary>
-  /// StopProcessing override.
-  /// </summary>
-  protected override void StopProcessing()
-  {
-    ConnectionInfo?.Cancel();
   }
 }
