@@ -1,4 +1,3 @@
-
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
@@ -32,7 +31,7 @@ public interface TransportProvider : IDisposable
   void CreateConnection() { }
 
   /// <summary>
-  /// This optional method will be called when the client wants to close the connection. You should signal your transport to close the connection
+  /// This optional method will be called when the client wants to close the connection (for example, when Remove-PSSession is called). You should signal your transport to close the connection. The client will likely send at least one more PSRP Close message to your server, so your transport should be able to handle that gracefully before closing.
   /// </summary>
   void CloseConnection() { }
 
@@ -55,6 +54,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   public readonly TaskCompletionSource<Runspace> CreateRunspaceTCS;
 
   public readonly TransportProvider TransportProvider;
+  bool CloseRequested;
 
   public SimpleTransportManager(Guid runspaceId, PSRemotingCryptoHelper cryptoHelper, SimpleRunspaceConnectionInfo connectionInfo, TransportProvider transportProvider) : base(runspaceId, cryptoHelper)
   {
@@ -70,18 +70,27 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     {
       TransportProvider.CreateConnection();
       // Runs the data transport handler on a new thread
-      Task.Factory.StartNew(HandleTransportDataReceived, TaskCreationOptions.LongRunning);
+      var receiveTask = Task.Factory.StartNew(HandleTransportDataReceived, TaskCreationOptions.LongRunning);
     }
     catch (Exception ex)
     {
-      HandleTransportException(ex);
+      HandleTransportException(ex, TransportMethodEnum.CreateShellEx);
     }
   }
 
   public override void CloseAsync()
   {
-    TransportProvider.CloseConnection();
-    base.CloseAsync();
+    try
+    {
+      base.CloseAsync();
+      TransportProvider.CloseConnection();
+      // Stop the message receive loop
+      CloseRequested = true;
+    }
+    catch (Exception ex)
+    {
+      HandleTransportException(ex, TransportMethodEnum.CloseShellOperationEx);
+    }
   }
 
   protected override void CleanupConnection()
@@ -92,16 +101,19 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     }
     catch (Exception ex)
     {
-      HandleTransportException(ex);
+      HandleTransportException(ex, TransportMethodEnum.CloseShellOperationEx);
     }
   }
 
   private async void HandleTransportDataReceived()
   {
+    // Makes it easier to debug. Since it is started longrunning it is a dedicated thread and wont have this name in the threadpool
+    Thread.CurrentThread.Name = "TransportManager-HandleTransportDataReceived";
     SendOneItem();
+
     try
     {
-      while (true)
+      while (!CloseRequested)
       {
         HandleDataReceived(
           await TransportProvider.ReceiveDataFromTransport()
@@ -110,9 +122,10 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     }
     catch (Exception ex)
     {
-      HandleTransportException(ex);
+      HandleTransportException(ex, TransportMethodEnum.ReceiveShellOutputEx);
     }
   }
+
   protected void HandleDataFromClient(string data)
   {
     try
@@ -121,7 +134,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     }
     catch (Exception ex)
     {
-      HandleTransportException(ex);
+      HandleTransportException(ex, TransportMethodEnum.SendShellInputEx);
     }
   }
 
@@ -132,28 +145,24 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
       // This is the normal expectation when the client closes the connection and should stop the task.
       return;
     }
-    if (ex is PSRemotingTransportException transportError)
-    {
-      CreateRunspaceTCS.TrySetException(transportError);
-      RaiseErrorHandler(
-        new TransportErrorOccuredEventArgs(
-          transportError, method
-        )
-      );
-    }
-    else
-    {
-      CreateRunspaceTCS.TrySetException(
-        new InvalidOperationException(
-          $"Critical Unhandled Non-TransportException occurred in custom transport: {ex.Message}. More detail in InnerException property",
-          ex
-        )
-      );
-    }
 
-    CloseAsync();
-    CleanupConnection();
-    Dispose();
+    PSRemotingTransportException transportEx = ex switch
+    {
+      PSRemotingTransportException tEx => tEx,
+      _ => new PSRemotingTransportException(
+        $"Unhandled Exception: {ex.Message}",
+        ex
+      )
+    };
+
+    // This should signal the client to close the connection
+    RaiseErrorHandler(
+      new TransportErrorOccuredEventArgs(
+        transportEx, method
+      )
+    );
+
+    CreateRunspaceTCS.TrySetException(ex);
   }
 }
 

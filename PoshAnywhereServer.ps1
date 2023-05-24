@@ -24,7 +24,9 @@ param (
   #How long in milliseconds to wait for the named pipe to connect. This should almost always be pretty much immediately so the default is 500ms
   [int]$NamedPipeConnectTimeout,
   #Use a raw tcp listener instead of a websocket
-  [Switch]$TCP
+  [Switch]$TCP,
+  #Dont start the server but just load the functions. This is primarily for developer use
+  [Switch]$NoStart
 )
 
 if ($AllowRemoteConnections) { $ListenAddress = '0.0.0.0' }
@@ -36,10 +38,12 @@ function Start-WebSocketNamedPipeServer ([ValidateNotNullOrEmpty()][int]$Port = 
   #>
   try {
     $server = Start-WebSocketServer -Port $Port
-    $pipeStream = Connect-PSRemotingNamedPipe
     while ($true) {
+      $pipeStream = Connect-PSRemotingNamedPipe
+      Write-Verbose 'WEBSOCKET: Listening for new connection.'
       Receive-PSRPStreamSession -server $server -Stream $pipeStream
-      Write-Verbose 'WEBSOCKET: Session Ended. Listening for new connection.'
+      $pipeStream.Dispose()
+      Write-Verbose 'WEBSOCKET: Session Ended.'
     }
   } catch {
     throw
@@ -245,12 +249,16 @@ function Join-WebsocketToStream ([WebSocket]$Websocket, [Stream]$Stream) {
 
           if ($result.MessageType -eq [WebSocketMessageType]::Close) {
             Write-Verbose 'WEBSOCKET: Received Close Request from Client. Responding with NormalClosure'
-            $websocket.CloseAsync('NormalClosure', [String]::Empty, [CancellationToken]::None) | Wait-Task | Out-Null
+            $websocket.CloseOutputAsync(
+              [WebSocketCloseStatus]::NormalClosure,
+              [String]::Empty,
+              [CancellationToken]::None
+            ) | Wait-Task | Out-Null
             return
           }
 
           if (-not $result.EndOfMessage) {
-            # We don't need to reset $receiveBuffer here, it will be overwritten and the count
+            # We don't need to reset $receiveBuffer here, it will be overwritten
             $result = $websocket.ReceiveAsync($receiveBuffer, [CancellationToken]::None) | Wait-Task
           }
         } until ($result.EndOfMessage)
@@ -306,27 +314,29 @@ filter Wait-Task ([int]$Timeout = 500) {
 }
 
 #region main
-try {
-  if ($TCP) {
-    $pipeClient = Connect-PSRemotingNamedPipe
-    $tcpClient = Start-PSRemotingTCPListener
-    $firstClosedStream = Join-Stream -Wait $pipeClient, $tcpClient.GetStream()
-    if (-not $firstClosedStream.IsCompletedSuccessfully) {
-      throw $firstClosedStream.Exception
+if (-not $NoStart) {
+  try {
+    if ($TCP) {
+      $pipeClient = Connect-PSRemotingNamedPipe
+      $tcpClient = Start-PSRemotingTCPListener
+      $firstClosedStream = Join-Stream -Wait $pipeClient, $tcpClient.GetStream()
+      if (-not $firstClosedStream.IsCompletedSuccessfully) {
+        throw $firstClosedStream.Exception
+      }
+      return
     }
-    return
-  }
 
-  #Default Websocket Implementation
-  Start-WebSocketNamedPipeServer
+    #Default Websocket Implementation
+    Start-WebSocketNamedPipeServer
 
-} catch { Write-Error $PSItem } finally {
-  if ($TCP) {
-    $pipeClient.Close()
-    $pipeClient.Dispose()
-    $tcpClient.Close()
-    $tcpClient.Dispose()
-    if ($tcpListener) { $tcpListener.Stop() }
+  } catch { Write-Error $PSItem } finally {
+    if ($TCP) {
+      $pipeClient.Close()
+      $pipeClient.Dispose()
+      $tcpClient.Close()
+      $tcpClient.Dispose()
+      if ($tcpListener) { $tcpListener.Stop() }
+    }
   }
 }
 #endregion main

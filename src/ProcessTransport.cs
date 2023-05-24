@@ -1,5 +1,4 @@
 using System.Management.Automation.Internal;
-using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
 namespace PoshTransports;
 

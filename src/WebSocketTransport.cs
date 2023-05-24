@@ -37,7 +37,7 @@ public class WebSocketConnectionInfo : SimpleRunspaceConnectionInfo
   public override string ComputerName
   {
     get => WebSocketTarget.Hostname;
-    set => throw new NotImplementedException("Cannot fetch Computername");
+    set => throw new NotImplementedException("Cannot set Computername");
   }
 }
 
@@ -45,7 +45,6 @@ class WebSocketTransport : TransportProvider
 {
   private readonly ClientWebSocket Client = new();
   private Task? activeHandleDataTask;
-
   private readonly WebSocketConnectionInfo ConnectionInfo;
   CancellationToken CancellationToken => ConnectionInfo.CancellationToken;
   Uri WebSocketUri => ConnectionInfo.WebSocketUri;
@@ -64,6 +63,11 @@ class WebSocketTransport : TransportProvider
     if (activeHandleDataTask is not null)
     {
       while (!activeHandleDataTask.Wait(500)) { }
+    }
+
+    if (Client.State != WebSocketState.Open)
+    {
+      return;
     }
 
     activeHandleDataTask = Client.SendAsync(
@@ -85,6 +89,10 @@ class WebSocketTransport : TransportProvider
       do
       {
         byte[] buffer = new byte[8194];
+        if (Client.State != WebSocketState.Open)
+        {
+          return string.Empty;
+        }
         receiveResult = await Client.ReceiveAsync(buffer, CancellationToken);
         await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), CancellationToken);
       } while (!receiveResult.EndOfMessage);
@@ -93,15 +101,18 @@ class WebSocketTransport : TransportProvider
       receiveStream.Position = 0;
       var message = await reader.ReadLineAsync(CancellationToken);
 
-      string errMessage = $"Websocket Server sent a close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}";
+      if (message is null && receiveResult.CloseStatus == WebSocketCloseStatus.NormalClosure)
+      {
+        // Represents a normal closure, so we just send an empty string to the client which should be a noop
+        return string.Empty;
+      }
 
       return message ?? throw receiveResult.CloseStatus switch
       {
-        WebSocketCloseStatus.NormalClosure => new PSRemotingTransportException("Server sent a NormalClosure, these are initiated from the client so this should never happen"),
         WebSocketCloseStatus.Empty => new PSRemotingTransportException("Received null data from websocket, this should never happen."),
         _ => new WebSocketException(
             WebSocketError.ConnectionClosedPrematurely,
-            $"Server sent a unexpected close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}"
+            $"Websocket Server sent a close status of {receiveResult.CloseStatus} with reason {receiveResult.CloseStatusDescription}"
         )
       };
     }
@@ -115,7 +126,10 @@ class WebSocketTransport : TransportProvider
   {
     try
     {
-      Client.ConnectAsync(WebSocketUri, CancellationToken).GetAwaiter().GetResult();
+      Client
+      .ConnectAsync(WebSocketUri, CancellationToken)
+      .GetAwaiter()
+      .GetResult();
     }
     catch (WebSocketException websocketEx)
     {
@@ -125,7 +139,12 @@ class WebSocketTransport : TransportProvider
 
   public void CloseConnection()
   {
-    Client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", new CancellationTokenSource(3000).Token);
+    Client.CloseAsync(
+      WebSocketCloseStatus.NormalClosure,
+      "Client initiated a close of the session",
+      CancellationToken
+    ).GetAwaiter().GetResult();
+    Client.Dispose();
   }
 
   protected void CleanupConnection()
@@ -135,6 +154,5 @@ class WebSocketTransport : TransportProvider
 
   public void Dispose()
   {
-    CleanupConnection();
   }
 }
