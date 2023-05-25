@@ -4,10 +4,11 @@ Describe 'Websocket Client' {
     Import-Module $PSScriptRoot/bin/Debug/net7.0/publish/PoshAnywhere.dll -Force
   }
   Context 'Failed Operations' {
-    It 'Fails to Connect if server is not available' {
+    It 'Fails to connect if server is not available' {
       {
         New-WebSocketSession -Port 12345 -ErrorAction Stop
-      } | Should -Throw '*target machine actively refused it*'
+      }
+      | Should -Throw '*Unable to connect to the remote server*'
     }
   }
   Context 'Server Interaction' {
