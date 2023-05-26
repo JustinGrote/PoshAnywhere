@@ -4,13 +4,15 @@ using namespace System.Management.Automation.Runspaces
 using namespace System.Net.Sockets
 using namespace System.Net.WebSockets
 using namespace System.Collections.Generic
+using namespace System.Diagnostics.CodeAnalysis
+using namespace System.Diagnostics
+using namespace System.Runtime.InteropServices
 using namespace System.Threading
 using namespace System.Threading.Tasks
 using namespace System.IO.Pipes
 using namespace System.IO
 using namespace System.Net
 using namespace System.Text
-
 
 param (
   #Allow non-localhost connections. This may require additional permissions
@@ -26,8 +28,12 @@ param (
   #Use a raw tcp listener instead of a websocket
   [Switch]$TCP,
   #Dont start the server but just load the functions. This is primarily for developer use
-  [Switch]$NoStart
+  [Switch]$NoStart,
+  #Dont start a Cloudflare quick tunnel to reach this websocket over the internet
+  [Switch]$NoCloudFlare
 )
+
+$ErrorActionPreference = 'Stop'
 
 if ($AllowRemoteConnections) { $ListenAddress = '0.0.0.0' }
 
@@ -313,6 +319,157 @@ filter Wait-Task ([int]$Timeout = 500) {
   return $task.Result
 }
 
+#region Cloudflared
+
+function Set-IsWindows {
+  if ($null -eq [RuntimeInformation]::ProcessArchitecture) {
+    #ProcessArchitecture is null on PowerShell 5.1 so we know we are on that.
+    $GLOBAL:IsWindows = $true
+  }
+}
+
+function Get-ProcessArchitecture {
+  #Polyfill IsWindows to PowerShell 5.1
+  $OSArchitecture = $null
+
+  # Detect ARM architecture using [Environment]
+  if ($null -eq [RuntimeInformation]::ProcessArchitecture) {
+    #ProcessArchitecture is null on PowerShell 5.1 so we know we are on that.
+
+    [SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', Justification = 'Polyfill')]
+    $GLOBAL:IsWindows = $true
+    if ([Environment]::Is64BitOperatingSystem) {
+      $OSArchitecture = 'X64'
+    } else {
+      $OSArchitecture = 'X86'
+    }
+  } else {
+    $OSArchitecture = [RuntimeInformation]::ProcessArchitecture
+  }
+  return $OSArchitecture
+}
+
+function Get-CloudflareAssetName {
+  param (
+    [string]$Release
+  )
+
+  $os = Get-CloudFlareAssetOS
+
+  $arch = ConvertTo-CloudFlareArchitecture
+
+  [string]$baseAsset = "cloudflared-$os-$arch"
+
+  if ($os -eq 'darwin') {
+    $baseAsset += '.tgz'
+  }
+
+  if ($os -eq 'windows') {
+    $baseAsset += '.exe'
+  }
+
+  return $baseAsset
+}
+
+function Get-CloudFlareAssetOS {
+  switch ($true) {
+    $IsWindows { 'windows' }
+    $IsLinux { 'linux' }
+    $IsMacOS { 'darwin' }
+    default { throw 'Could not detect operating system' }
+  }
+}
+
+function ConvertTo-CloudFlareArchitecture ($architecture = (Get-ProcessArchitecture)) {
+  switch ($architecture) {
+    'X64' { 'amd64' }
+    'X86' { '386' }
+    'Arm' { 'arm' }
+    'Arm64' { 'arm64' }
+    default { throw 'Could not detect architecture' }
+  }
+}
+
+function Save-CfGithubRelease {
+  param (
+    #The specific release to save. If not specified, the latest release will be downloaded
+    [string]$Release,
+    #Where to save the file, you should provide a directory.
+    [string]$Destination,
+    #Download even if the file exists
+    [switch]$Force
+  )
+
+  # Use download/latest uri
+  $baseGitHubUri = 'https://github.com/cloudflare/cloudflared/releases/'
+
+  if ($Release) {
+    $baseGitHubUri += "download/$Release/"
+  } else {
+    $baseGitHubUri += 'latest/download/'
+  }
+  $assetName = Get-CloudflareAssetName
+
+  $gitHubReleaseUri = $baseGitHubUri + $assetName
+
+  if (-not $Destination) {
+    $Destination = [Path]::GetTempPath()
+  }
+
+  $AbsoluteDestination = Resolve-Path $Destination
+
+  $OutFilePath = Join-Path $AbsoluteDestination $assetName
+
+  if ((Test-Path $OutFilePath) -and -not $Force) {
+    Write-Verbose "Cloudflared already found in $OutFilePath. Use -Force to download again"
+  } else {
+    Invoke-WebRequest -Uri $gitHubReleaseUri -OutFile $OutFilePath -ErrorAction stop
+  }
+
+  return $OutFilePath
+}
+
+function Start-Cloudflared {
+  param(
+    [string]$CloudflaredPath = $(Save-CfGithubRelease),
+    [int]$Port
+  )
+
+  # Run cloudflared as a separate process and wait for the connection message
+  $startInfo = [ProcessStartInfo]::new(
+    $CloudflaredPath,
+    "tunnel --url localhost:$Port"
+  )
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.UseShellExecute = $false
+
+  $process = [Process]::new()
+  $process.StartInfo = $startInfo
+  if (-not $process.Start()) { throw 'Cloudflare process failed to start.' }
+
+  #Read stdout until we get the connection message
+  [string]$cfTunnelHostname = $null
+
+  do {
+    $cfOut = $process.StandardError
+    $line = $cfOut.ReadLine()
+    if ($line -match 'Your quick Tunnel has been created!') {
+      if ($cfOut.ReadLine() -notmatch 'https\:\/\/(.+?).trycloudflare.com') {
+        throw 'Tunnel was created but could not find the URL. The cloudflared output format may have changed'
+      }
+      $cfTunnelHostname = $Matches[1]
+    }
+  } until ($cfTunnelHostname)
+
+  return @{
+    Process  = $process
+    Hostname = $cfTunnelHostname
+  }
+}
+
+#endregion Cloudflared
+
 #region main
 if (-not $NoStart) {
   try {
@@ -326,10 +483,20 @@ if (-not $NoStart) {
       return
     }
 
-    #Default Websocket Implementation
-    Start-WebSocketNamedPipeServer
+    #Download and start cloudflare
+    $tunnelInfo = Start-Cloudflared -Port $Port
+    $tunnelName = $tunnelInfo.Hostname
 
+    Write-Host -Fore Green "Your cloudflare tunnel name is $tunnelName. Connect to it using New-WebsocketSession -Hostname $tunnelName.trycloudflare.com"
+
+    #Default Websocket Implementation
+    Start-WebSocketNamedPipeServer -Verbose -Debug
   } catch { Write-Error $PSItem } finally {
+    if ($tunnelInfo.Process) {
+      $tunnelInfo.Process.Kill()
+      $tunnelInfo.Process.Dispose()
+    }
+
     if ($TCP) {
       $pipeClient.Close()
       $pipeClient.Dispose()

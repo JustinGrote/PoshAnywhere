@@ -70,7 +70,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     {
       TransportProvider.CreateConnection();
       // Runs the data transport handler on a new thread
-      var receiveTask = Task.Factory.StartNew(HandleTransportDataReceived, TaskCreationOptions.LongRunning);
+      var receiveTask = Task.Run(HandleTransportDataReceived);
     }
     catch (Exception ex)
     {
