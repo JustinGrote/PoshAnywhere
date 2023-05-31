@@ -20,7 +20,7 @@ param (
   #How large to make the buffer for websockets. A larger buffer will have better performance but use more memory.
   [int]$BufferSize = 8192,
   #Which port to listen on, defaults to 7073
-  [int]$Port,
+  [int]$Port = 7073,
   #Listen to a specific PowerShell process instead of the currently running one.
   [int]$PowerShellProcessId,
   #How long in milliseconds to wait for the named pipe to connect. This should almost always be pretty much immediately so the default is 500ms
@@ -336,7 +336,7 @@ function Get-ProcessArchitecture {
   if ($null -eq [RuntimeInformation]::ProcessArchitecture) {
     #ProcessArchitecture is null on PowerShell 5.1 so we know we are on that.
 
-    [SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', Justification = 'Polyfill')]
+    [SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', '', Justification = 'Polyfill')]
     $GLOBAL:IsWindows = $true
     if ([Environment]::Is64BitOperatingSystem) {
       $OSArchitecture = 'X64'
@@ -438,7 +438,7 @@ function Start-Cloudflared {
   # Run cloudflared as a separate process and wait for the connection message
   $startInfo = [ProcessStartInfo]::new(
     $CloudflaredPath,
-    "tunnel --url localhost:$Port"
+    "tunnel --http-host-header localhost --url localhost:$Port"
   )
   $startInfo.RedirectStandardOutput = $true
   $startInfo.RedirectStandardError = $true
@@ -483,15 +483,20 @@ if (-not $NoStart) {
       return
     }
 
-    #Download and start cloudflare
-    $tunnelInfo = Start-Cloudflared -Port $Port
-    $tunnelName = $tunnelInfo.Hostname
+    if (-not $noCloudFlare) {
+      #Download and start cloudflare
+      $tunnelInfo = Start-Cloudflared -Port $Port
+      $tunnelName = $tunnelInfo.Hostname
 
-    Write-Host -Fore Green "Your cloudflare tunnel name is $tunnelName. Connect to it using New-WebsocketSession -Hostname $tunnelName.trycloudflare.com"
+      Write-Host -Fore Green "Your cloudflare tunnel name is $tunnelName. Connect to it using: "
+      Write-Host -Fore Cyan "New-WebsocketSession -Hostname $tunnelName.trycloudflare.com -Port 443"
+    }
 
     #Default Websocket Implementation
     Start-WebSocketNamedPipeServer -Verbose -Debug
-  } catch { Write-Error $PSItem } finally {
+  } catch {
+    Write-Error $PSItem
+  } finally {
     if ($tunnelInfo.Process) {
       $tunnelInfo.Process.Kill()
       $tunnelInfo.Process.Dispose()
