@@ -78,7 +78,7 @@ class WebSocketTransport : TransportProvider
     );
   }
 
-  public async Task<string> ReceiveDataFromTransport()
+  public async Task<string?> ReceiveDataFromTransport()
   {
     try
     {
@@ -104,7 +104,7 @@ class WebSocketTransport : TransportProvider
       if (message is null && receiveResult.CloseStatus == WebSocketCloseStatus.NormalClosure)
       {
         // Represents a normal closure, so we just send an empty string to the client which should be a noop
-        return string.Empty;
+        return null;
       }
 
       return message ?? throw receiveResult.CloseStatus switch

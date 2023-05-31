@@ -16,7 +16,7 @@ Describe 'Websocket Client' {
       $SCRIPT:psanywhereServer = Start-ThreadJob -Scriptblock {
         Start-Transcript -Path "TEMP:/PoshAnywhereServer-$PID.log" -UseMinimalHeader
         try {
-          ./PoshAnywhereServer.ps1 -Verbose -Debug
+          ./PoshAnywhereServer.ps1 -Verbose -Debug -NoCloudFlare
         } finally {
           Stop-Transcript
         }

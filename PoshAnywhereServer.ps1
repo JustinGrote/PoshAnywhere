@@ -483,7 +483,7 @@ if (-not $NoStart) {
       return
     }
 
-    if (-not $noCloudFlare) {
+    if (-not $NoCloudFlare) {
       #Download and start cloudflare
       $tunnelInfo = Start-Cloudflared -Port $Port
       $tunnelName = $tunnelInfo.Hostname

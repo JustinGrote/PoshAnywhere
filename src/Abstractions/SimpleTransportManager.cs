@@ -1,3 +1,4 @@
+using System.Management.Automation;
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
@@ -22,8 +23,10 @@ public interface TransportProvider : IDisposable
   /// - Await a task or async function that returns the next message
   /// - Register for a event that your transport emits and act on that event.
   /// - Implement a while (true) loop that periodically polls your transport for the next message
+  ///
+  /// If you are ready to close the session normally, return null
   /// </summary>
-  Task<string> ReceiveDataFromTransport();
+  Task<string?> ReceiveDataFromTransport();
 
   /// <summary>
   /// This optional method is called to setup the connection. You should initialize your transport here.
@@ -105,19 +108,22 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     }
   }
 
-  private async void HandleTransportDataReceived()
+  private async Task HandleTransportDataReceived()
   {
-    // Makes it easier to debug. Since it is started longrunning it is a dedicated thread and wont have this name in the threadpool
-    Thread.CurrentThread.Name = "TransportManager-HandleTransportDataReceived";
     SendOneItem();
 
     try
     {
       while (!CloseRequested)
       {
-        HandleDataReceived(
-          await TransportProvider.ReceiveDataFromTransport()
-        );
+        var data = await TransportProvider.ReceiveDataFromTransport();
+        // null indicates a closed session request
+        if (data is null)
+        {
+          CloseRequested = true;
+          return;
+        }
+        HandleDataReceived(data);
       }
     }
     catch (Exception ex)
