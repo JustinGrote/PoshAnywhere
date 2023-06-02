@@ -1,4 +1,3 @@
-using System.Management.Automation;
 using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
 using System.Management.Automation.Remoting.Client;
@@ -8,40 +7,36 @@ using System.Text;
 namespace PoshTransports;
 
 /// <summary>
-/// This interface provides a simple way to implement a PSRP custom transport provider. You should implement this interface and pass it to the constructor of a new SimpleRunspaceConnectionInfo object. You can safely throw any exception which will flag the runspace as broken with your exception as the reason, or an error reported to the upstream PSCmdlet or host responsible for creating the runspace if the runspace has not connected yet.
+/// This interface provides a simple way to implement a PSRP custom transport provider. You should implement this interface and pass it to the constructor of a new SimpleRunspaceConnectionInfo object. You can safely throw any exception which will flag the runspace as broken with your exception as the reason, or an error reported to the upstream PSCmdlet or host responsible for creating the runspace if the runspace has not connected yet. Use Dispose to clean up any resources you have allocated.
 /// </summary>
 public interface TransportProvider : IDisposable
 {
   /// <summary>
-  /// This function will be called whenever a new PSRP message arrives from the client. You should generally just pass the message to your transport
+  /// This function will be called whenever a new PSRP message arrives from the client PSRP engine. You should generally just pass the message to your transport
   /// </summary>
-  void HandleDataFromClient(string data);
+  Task HandleDataFromClient(string data, CancellationToken cancellationToken = default);
 
   /// <summary>
+  /// <para>
   /// This function MUST await and return the next PSRP message in XML form to send to the client and return the PSRP message as a string. It will automatically be looped on a nonblocking thread. If the function does not block, it will be called as fast as possible, which will likely cause high CPU usage.
   /// Some examples of how to implement this function:
   /// - Await a task or async function that returns the next message
   /// - Register for a event that your transport emits and act on that event.
   /// - Implement a while (true) loop that periodically polls your transport for the next message
-  ///
-  /// If you are ready to close the session normally, return null
+  /// </para>
+  /// <para>Your implementation should also handle the CancellationToken, and throw an OperationCanceledException to signal that you have gracefully closed the connection.</para>
   /// </summary>
-  Task<string?> ReceiveDataFromTransport();
+  Task<string?> HandleDataFromTransport(CancellationToken cancellationToken = default);
 
   /// <summary>
   /// This optional method is called to setup the connection. You should initialize your transport here.
   /// </summary>
-  void CreateConnection() { }
+  void CreateConnection(CancellationToken cancellationToken = default) { }
 
   /// <summary>
   /// This optional method will be called when the client wants to close the connection (for example, when Remove-PSSession is called). You should signal your transport to close the connection. The client will likely send at least one more PSRP Close message to your server, so your transport should be able to handle that gracefully before closing.
   /// </summary>
-  void CloseConnection() { }
-
-  /// <summary>
-  /// This optional method will be called after the connection is closed. You should dispose and clean up any resources here.
-  /// </summary>
-  void CleanupConnection() { }
+  void CloseConnection(CancellationToken cancellationToken = default) { }
 }
 
 /// <summary>
@@ -52,18 +47,16 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   /// <summary>
   /// Use this CancellationToken where usable, it is called when the client wants to cancel the transport operation.
   /// </summary>
-  public readonly CancellationToken CancellationToken;
-
-  public readonly TaskCompletionSource<Runspace> CreateRunspaceTCS;
-
   public readonly TransportProvider TransportProvider;
-  bool CloseRequested;
+  internal readonly SimpleRunspaceConnectionInfo ConnectionInfo;
+  internal TaskCompletionSource<Runspace> CreateRunspaceTCS => ConnectionInfo.CreateRunspaceTaskCompletionSource;
+  internal CancellationToken CancellationToken => ConnectionInfo.CancellationToken;
+  private Task? ReceiveHandlerTask;
 
   public SimpleTransportManager(Guid runspaceId, PSRemotingCryptoHelper cryptoHelper, SimpleRunspaceConnectionInfo connectionInfo, TransportProvider transportProvider) : base(runspaceId, cryptoHelper)
   {
     SetMessageWriter(new ActionTextWriter(HandleDataFromClient));
-    CancellationToken = connectionInfo.CancellationToken;
-    CreateRunspaceTCS = connectionInfo.CreateRunspaceTaskCompletionSource;
+    ConnectionInfo = connectionInfo;
     TransportProvider = transportProvider;
   }
 
@@ -72,8 +65,8 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     try
     {
       TransportProvider.CreateConnection();
-      // Runs the data transport handler on a new thread
-      var receiveTask = Task.Run(HandleTransportDataReceived);
+      // Runs the data transport handler on a new fire-and-forget thread. A cancellationToken will signal the end of this task
+      ReceiveHandlerTask = Task.Run(TransportDataReceiveHandler, CancellationToken);
     }
     catch (Exception ex)
     {
@@ -86,9 +79,8 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     try
     {
       base.CloseAsync();
-      TransportProvider.CloseConnection();
-      // Stop the message receive loop
-      CloseRequested = true;
+      ConnectionInfo.Cancel();
+      TransportProvider.CloseConnection(CancellationToken);
     }
     catch (Exception ex)
     {
@@ -100,7 +92,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   {
     try
     {
-      TransportProvider.CleanupConnection();
+      TransportProvider.Dispose();
     }
     catch (Exception ex)
     {
@@ -108,27 +100,20 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     }
   }
 
-  private async Task HandleTransportDataReceived()
+  private async Task TransportDataReceiveHandler()
   {
     SendOneItem();
-
-    try
+    while (!CancellationToken.IsCancellationRequested)
     {
-      while (!CloseRequested)
+      try
       {
-        var data = await TransportProvider.ReceiveDataFromTransport();
-        // null indicates a closed session request
-        if (data is null)
-        {
-          CloseRequested = true;
-          return;
-        }
+        var data = await TransportProvider.HandleDataFromTransport(CancellationToken);
         HandleDataReceived(data);
       }
-    }
-    catch (Exception ex)
-    {
-      HandleTransportException(ex, TransportMethodEnum.ReceiveShellOutputEx);
+      catch (Exception ex)
+      {
+        HandleTransportException(ex, TransportMethodEnum.ReceiveShellOutputEx);
+      }
     }
   }
 
@@ -136,7 +121,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   {
     try
     {
-      TransportProvider.HandleDataFromClient(data);
+      TransportProvider.HandleDataFromClient(data, CancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
     }
     catch (Exception ex)
     {
@@ -148,7 +133,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   {
     if (ex is ObjectDisposedException)
     {
-      // This is the normal expectation when the client closes the connection and should stop the task.
+      // This is the normal expectation when the client closes the connection and should stop the task
       return;
     }
 
@@ -168,7 +153,15 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
       )
     );
 
+    // We expose the original exception to the cmdlet if we are still in the connecting phase
     CreateRunspaceTCS.TrySetException(ex);
+  }
+
+  protected override void Dispose(bool disposing)
+  {
+    TransportProvider.Dispose();
+    ReceiveHandlerTask?.Dispose();
+    base.Dispose(disposing);
   }
 }
 

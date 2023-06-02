@@ -46,7 +46,6 @@ class WebSocketTransport : TransportProvider
   private readonly ClientWebSocket Client = new();
   private Task? activeHandleDataTask;
   private readonly WebSocketConnectionInfo ConnectionInfo;
-  CancellationToken CancellationToken => ConnectionInfo.CancellationToken;
   Uri WebSocketUri => ConnectionInfo.WebSocketUri;
 
   public WebSocketTransport(WebSocketConnectionInfo connectionInfo)
@@ -54,31 +53,32 @@ class WebSocketTransport : TransportProvider
     ConnectionInfo = connectionInfo;
   }
 
-  public void HandleDataFromClient(string data)
+  public async Task HandleDataFromClient(string message, CancellationToken cancellationToken)
   {
     // We do not add a newline here, it will be added on the other side when passed to the named pipe, because websockets has the concept of messages and we don't need a delimiter, it'll simply signal the client when the bytes are finished writing
 
     // We can only send one message at a time, so we need to wait for the previous message to finish sending before we can send the next one
     // Ref: https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.websocket.sendasync?view=net-7.0
+
     if (activeHandleDataTask is not null)
     {
-      while (!activeHandleDataTask.Wait(500)) { }
+      await activeHandleDataTask;
     }
 
     if (Client.State != WebSocketState.Open)
     {
-      return;
+      throw new PSRemotingTransportException("Websocket is not open, cannot send data");
     }
 
     activeHandleDataTask = Client.SendAsync(
-      Encoding.UTF8.GetBytes(data),
+      Encoding.UTF8.GetBytes(message),
       WebSocketMessageType.Text,
       true,
-      CancellationToken
+      cancellationToken
     );
   }
 
-  public async Task<string?> ReceiveDataFromTransport()
+  public async Task<string?> HandleDataFromTransport(CancellationToken cancellationToken)
   {
     try
     {
@@ -93,13 +93,14 @@ class WebSocketTransport : TransportProvider
         {
           return string.Empty;
         }
-        receiveResult = await Client.ReceiveAsync(buffer, CancellationToken);
-        await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), CancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        receiveResult = await Client.ReceiveAsync(buffer, cancellationToken);
+        await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), cancellationToken);
       } while (!receiveResult.EndOfMessage);
 
       // Rewind the memorystream so it can be read by readline
       receiveStream.Position = 0;
-      var message = await reader.ReadLineAsync(CancellationToken);
+      var message = await reader.ReadLineAsync(cancellationToken);
 
       if (message is null && receiveResult.CloseStatus == WebSocketCloseStatus.NormalClosure)
       {
@@ -122,12 +123,12 @@ class WebSocketTransport : TransportProvider
     }
   }
 
-  public void CreateConnection()
+  public void CreateConnection(CancellationToken cancellationToken)
   {
     try
     {
       Client
-      .ConnectAsync(WebSocketUri, CancellationToken)
+      .ConnectAsync(WebSocketUri, cancellationToken)
       .GetAwaiter()
       .GetResult();
     }
@@ -137,22 +138,18 @@ class WebSocketTransport : TransportProvider
     }
   }
 
-  public void CloseConnection()
+  public void CloseConnection(CancellationToken cancellationToken)
   {
     Client.CloseAsync(
       WebSocketCloseStatus.NormalClosure,
       "Client initiated a close of the session",
-      CancellationToken
+      cancellationToken
     ).GetAwaiter().GetResult();
-    Client.Dispose();
-  }
-
-  protected void CleanupConnection()
-  {
-    Client.Dispose();
   }
 
   public void Dispose()
   {
+    CloseConnection(default);
+    Client.Dispose();
   }
 }

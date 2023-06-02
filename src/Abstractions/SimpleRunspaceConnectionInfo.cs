@@ -1,6 +1,8 @@
 
+using System.Collections.Concurrent;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
+using System.Security.Cryptography;
 
 namespace PoshTransports;
 
@@ -9,6 +11,7 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   internal readonly TaskCompletionSource<Runspace> CreateRunspaceTaskCompletionSource = new();
   private readonly CancellationTokenSource CancellationTokenSource = new();
   private readonly PSCmdlet PSCmdlet;
+  private readonly BlockingCollection<Object> ConnectionResult = new();
   private readonly string? Name;
   public CancellationToken CancellationToken => CancellationTokenSource.Token;
 
@@ -73,7 +76,20 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
     );
   }
 
-  public PSSession Connect() => ConnectAsync().GetAwaiter().GetResult();
+  /// <summary>
+  /// Produces a blocking collection that includes all logs from the connection process and finally a pssession object. The PSCmdlet should process these objects within its own scope and distribute to the appropriate verbose/warning/debug streams, preferably with the WriteEnumerable method.
+  /// </summary>
+  public BlockingCollection<object> CmdletConnect()
+  {
+    Task.Run(async () =>
+    {
+      ConnectionResult.Add(await ConnectAsync());
+      // Will unblock the PSCmdlet
+      ConnectionResult.CompleteAdding();
+    });
+
+    return ConnectionResult;
+  }
 
   public void Cancel()
   {
