@@ -446,6 +446,9 @@ function Start-Cloudflared {
 
   $process = [Process]::new()
   $process.StartInfo = $startInfo
+  if ($isLinux -and -not (((Get-Item $CloudflaredPath).UnixFileMode -band 'UserExecute') -eq 'UserExecute')) {
+    chmod +x $CloudflaredPath
+  }
   if (-not $process.Start()) { throw 'Cloudflare process failed to start.' }
 
   #Read stdout until we get the connection message
