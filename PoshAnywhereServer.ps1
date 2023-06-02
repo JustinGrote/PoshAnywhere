@@ -82,17 +82,19 @@ function Get-PSRemotingNamedPipe() {
   $process = Get-Process -Id $ID -ErrorAction Stop
   $processStartTime = $process.StartTime.ToFileTime()
 
-  $processStartId = if ($PSEdition -eq 'Desktop' -or $isWindows) {
-    $processStartTime
+  if ($PSEdition -eq 'Desktop' -or $isWindows) {
+    $processStartId = $processStartTime
+    $appDomain = 'DefaultAppDomain'
   } else {
-    $processStartTime.ToString('X8').Substring(1, 8)
+    $processStartId = $processStartTime.ToString('X8').Substring(1, 8)
+    $appDomain = 'None'
   }
 
   $pipeName = (@(
       'PSHost'
       $processStartID
       $process.Id
-      'DefaultAppDomain'
+      $appDomain
       $process.ProcessName
     ) -join '.').ToString([cultureinfo]::InvariantCulture)
   if ($PipeNameOnly) { return $pipeName }
@@ -492,7 +494,7 @@ if (-not $NoStart) {
       $tunnelName = $tunnelInfo.Hostname
 
       Write-Host -Fore Green "Your cloudflare tunnel name is $tunnelName. Connect to it using: "
-      Write-Host -Fore Cyan "New-WebsocketSession -Hostname $tunnelName.trycloudflare.com -Port 443"
+      Write-Host -Fore Cyan "New-WebsocketSession -Hostname $tunnelName.trycloudflare.com"
     }
 
     #Default Websocket Implementation
