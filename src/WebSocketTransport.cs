@@ -1,7 +1,5 @@
 using System.Management.Automation;
-using System.Management.Automation.Internal;
 using System.Management.Automation.Remoting;
-using System.Management.Automation.Remoting.Client;
 using System.Net.WebSockets;
 using System.Text;
 
@@ -11,28 +9,28 @@ public record WebSocketTarget(string Hostname, int Port, bool UseSSL)
 {
   public string Protocol => UseSSL ? "wss" : "ws";
   public Uri WebSocketUri => new($"{Protocol}://{Hostname}:{Port}/psrp");
+
+  public static WebSocketTarget Create(string Hostname, int Port, bool UseSSL) => new(Hostname, Port, UseSSL);
+  public static WebSocketTarget Parse(Uri WebSocketUri) => new(WebSocketUri.Host, WebSocketUri.Port, WebSocketUri.Scheme == "wss");
+
+  public override string ToString() => WebSocketUri.ToString();
 }
 
 public class WebSocketConnectionInfo : SimpleRunspaceConnectionInfo
 {
-  internal readonly WebSocketTarget WebSocketTarget;
-  internal Uri WebSocketUri => WebSocketTarget.WebSocketUri;
+  public readonly WebSocketTarget WebSocketTarget;
+  public Uri WebSocketUri => WebSocketTarget.WebSocketUri;
 
-  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true, string? name = null) : base(psCmdlet, name)
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, WebSocketTransport webSocketTransport, string? name) : base(psCmdlet, webSocketTransport, name)
   {
-    WebSocketTarget = new(hostname, port, useSSL);
+    WebSocketTarget = webSocketTransport.WebSocketTarget;
   }
 
-  public override BaseClientSessionTransportManager CreateClientSessionTransportManager(
-    Guid instanceId,
-    string sessionName,
-    PSRemotingCryptoHelper cryptoHelper
-  ) => new SimpleTransportManager(
-    instanceId,
-    cryptoHelper,
-    this,
-    new WebSocketTransport(this)
-  );
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, WebSocketTarget webSocketTarget, string? name) : this(psCmdlet, new WebSocketTransport(webSocketTarget), name) { }
+
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true) : this(psCmdlet, new WebSocketTarget(hostname, port, useSSL), null) { }
+
+  public WebSocketConnectionInfo(PSCmdlet psCmdlet, int port, string hostname = "localhost", bool useSSL = true, string? name = null) : this(psCmdlet, new WebSocketTarget(hostname, port, useSSL), name) { }
 
   public override string ComputerName
   {
@@ -41,16 +39,16 @@ public class WebSocketConnectionInfo : SimpleRunspaceConnectionInfo
   }
 }
 
-class WebSocketTransport : TransportProvider
+public class WebSocketTransport : TransportProvider
 {
+  public readonly WebSocketTarget WebSocketTarget;
+  public Uri WebSocketUri => WebSocketTarget.WebSocketUri;
   private readonly ClientWebSocket Client = new();
   private Task? activeHandleDataTask;
-  private readonly WebSocketConnectionInfo ConnectionInfo;
-  Uri WebSocketUri => ConnectionInfo.WebSocketUri;
 
-  public WebSocketTransport(WebSocketConnectionInfo connectionInfo)
+  public WebSocketTransport(WebSocketTarget webSocketTarget)
   {
-    ConnectionInfo = connectionInfo;
+    WebSocketTarget = webSocketTarget;
   }
 
   public async Task HandleDataFromClient(string message, CancellationToken cancellationToken)
@@ -94,7 +92,16 @@ class WebSocketTransport : TransportProvider
           return string.Empty;
         }
         cancellationToken.ThrowIfCancellationRequested();
+
         receiveResult = await Client.ReceiveAsync(buffer, cancellationToken);
+
+        // A cancel on ReceiveAsync will abort the socket
+        // https://github.com/dotnet/runtime/issues/31566
+        if (Client.State == WebSocketState.Aborted)
+        {
+          return null;
+        }
+
         await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), cancellationToken);
       } while (!receiveResult.EndOfMessage);
 
@@ -140,16 +147,20 @@ class WebSocketTransport : TransportProvider
 
   public void CloseConnection(CancellationToken cancellationToken)
   {
-    Client.CloseAsync(
-      WebSocketCloseStatus.NormalClosure,
-      "Client initiated a close of the session",
-      cancellationToken
-    ).GetAwaiter().GetResult();
+    if (Client.State == WebSocketState.Open)
+    {
+      Client.CloseAsync(
+        WebSocketCloseStatus.NormalClosure,
+        "Client initiated a normal close of the session, probably due to the PSSession being removed",
+        cancellationToken
+      ).GetAwaiter().GetResult();
+    }
   }
 
   public void Dispose()
   {
     CloseConnection(default);
     Client.Dispose();
+    GC.SuppressFinalize(this);
   }
 }

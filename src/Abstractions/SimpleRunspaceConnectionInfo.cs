@@ -1,8 +1,9 @@
 
 using System.Collections.Concurrent;
 using System.Management.Automation;
+using System.Management.Automation.Internal;
+using System.Management.Automation.Remoting.Client;
 using System.Management.Automation.Runspaces;
-using System.Security.Cryptography;
 
 namespace PoshTransports;
 
@@ -10,8 +11,9 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
 {
   internal readonly TaskCompletionSource<Runspace> CreateRunspaceTaskCompletionSource = new();
   private readonly CancellationTokenSource CancellationTokenSource = new();
+  private readonly TransportProvider TransportProvider;
   private readonly PSCmdlet PSCmdlet;
-  private readonly BlockingCollection<Object> ConnectionResult = new();
+  private readonly BlockingCollection<object> ConnectionResult = new();
   private readonly string? Name;
   public CancellationToken CancellationToken => CancellationTokenSource.Token;
 
@@ -20,9 +22,10 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   /// </summary>
   public Task<Runspace> RunspaceConnectedTask => CreateRunspaceTaskCompletionSource.Task;
 
-  protected SimpleRunspaceConnectionInfo(PSCmdlet psCmdlet, string? name)
+  protected SimpleRunspaceConnectionInfo(PSCmdlet psCmdlet, TransportProvider transportProvider, string? name)
   {
     PSCmdlet = psCmdlet;
+    TransportProvider = transportProvider;
     Name = name;
     CancellationToken.Register(() => CreateRunspaceTaskCompletionSource.TrySetCanceled());
   }
@@ -57,6 +60,17 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
     return Runspace;
   }
 
+  public override BaseClientSessionTransportManager CreateClientSessionTransportManager(
+    Guid instanceId,
+    string sessionName,
+    PSRemotingCryptoHelper cryptoHelper
+  ) => new SimpleTransportManager(
+    instanceId,
+    cryptoHelper,
+    this,
+    TransportProvider
+  );
+
   public async Task<PSSession> ConnectAsync()
   {
     Runspace Runspace = CreateRunspace();
@@ -65,10 +79,11 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
       Runspace.OpenAsync();
       await RunspaceConnectedTask;
     }
-    catch (TaskCanceledException cancelEx)
+    catch (OperationCanceledException cancelEx)
     {
       throw new PipelineStoppedException(cancelEx.Message, cancelEx);
     }
+
     return PSSession.Create(
       runspace: Runspace,
       transportName: "WebSocket",
@@ -81,14 +96,25 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   /// </summary>
   public BlockingCollection<object> CmdletConnect()
   {
-    Task.Run(async () =>
+    Task.Run(CmdletConnectAsync);
+    return ConnectionResult;
+  }
+
+  async Task CmdletConnectAsync()
+  {
+    try
     {
       ConnectionResult.Add(await ConnectAsync());
+    }
+    catch (OperationCanceledException ex)
+    {
+      ConnectionResult.Add("The connection was canceled: " + ex.Message);
+    }
+    finally
+    {
       // Will unblock the PSCmdlet
       ConnectionResult.CompleteAdding();
-    });
-
-    return ConnectionResult;
+    }
   }
 
   public void Cancel()

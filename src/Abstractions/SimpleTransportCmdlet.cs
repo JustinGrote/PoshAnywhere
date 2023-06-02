@@ -56,11 +56,14 @@ public abstract class SimpleTransportCmdletBase : PSCmdlet
         case ErrorRecord error:
           WriteError(error);
           break;
+        case Exception exception:
+          ThrowTerminatingError(new ErrorRecord(exception, "UnhandledCustomTransportException", ErrorCategory.ConnectionError, CurrentConnectionInfo));
+          break;
         case T expectedObject:
           WriteObject(expectedObject);
           break;
         default:
-          throw new InvalidDataException($"The connectionInfo returned an unexpected type. The only valid types are {typeof(T)} or various log results");
+          throw new InvalidDataException($"The connectionInfo returned an unexpected type. The only valid types are {typeof(T)}, string to indicate a verbose log message, the various Powershell Record types, and exception to be surfaced as a terminating error");
       }
     }
   }
