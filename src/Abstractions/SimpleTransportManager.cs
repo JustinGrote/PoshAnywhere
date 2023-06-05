@@ -26,7 +26,7 @@ public interface TransportProvider : IDisposable
   /// </para>
   /// <para>Your implementation should also handle the CancellationToken, and throw an OperationCanceledException to signal that you have gracefully closed the connection.</para>
   /// </summary>
-  Task<string?> HandleDataFromTransport(CancellationToken cancellationToken = default);
+  Task<string> HandleDataFromTransport(CancellationToken cancellationToken = default);
 
   /// <summary>
   /// This optional method is called to setup the connection. You should initialize your transport here.
@@ -76,10 +76,10 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
 
   public override void CloseAsync()
   {
+    Console.WriteLine("CloseAsync");
     try
     {
       base.CloseAsync();
-      ConnectionInfo.Cancel();
       TransportProvider.CloseConnection(CancellationToken);
     }
     catch (Exception ex)
@@ -90,6 +90,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
 
   protected override void CleanupConnection()
   {
+    Console.WriteLine("CleanupConnectionBegin");
     try
     {
       TransportProvider.Dispose();
@@ -98,6 +99,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     {
       HandleTransportException(ex, TransportMethodEnum.CloseShellOperationEx);
     }
+    Console.WriteLine("CleanupConnectionEnd");
   }
 
   private async Task TransportDataReceiveHandler()
@@ -109,6 +111,11 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
       {
         var data = await TransportProvider.HandleDataFromTransport(CancellationToken);
         HandleDataReceived(data);
+      }
+      catch (OperationCanceledException)
+      {
+        // A cancellation means we want to end the loop
+        return;
       }
       catch (Exception ex)
       {
@@ -165,7 +172,7 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
   protected override void Dispose(bool disposing)
   {
     TransportProvider.Dispose();
-    ReceiveHandlerTask?.Dispose();
+    // TODO: Wait for the receive handler task to finish to confirm we dont have an outstanding issue
     base.Dispose(disposing);
   }
 }

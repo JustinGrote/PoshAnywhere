@@ -15,7 +15,8 @@ public abstract class SimpleTransportCmdletBase : PSCmdlet
   protected override sealed void ProcessRecord()
   {
     CurrentConnectionInfo = CreateConnectionInfo();
-    WriteEnumerable<PSSession>(CurrentConnectionInfo.CmdletConnect().GetConsumingEnumerable());
+    using var cmdletConnectOutput = CurrentConnectionInfo.CmdletConnect();
+    WriteEnumerable<PSSession>(cmdletConnectOutput.GetConsumingEnumerable());
     base.ProcessRecord();
   }
 

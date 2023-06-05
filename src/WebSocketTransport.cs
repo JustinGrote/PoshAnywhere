@@ -76,7 +76,7 @@ public class WebSocketTransport : TransportProvider
     );
   }
 
-  public async Task<string?> HandleDataFromTransport(CancellationToken cancellationToken)
+  public async Task<string> HandleDataFromTransport(CancellationToken cancellationToken)
   {
     try
     {
@@ -87,32 +87,22 @@ public class WebSocketTransport : TransportProvider
       do
       {
         byte[] buffer = new byte[8194];
-        if (Client.State != WebSocketState.Open)
-        {
-          return string.Empty;
-        }
         cancellationToken.ThrowIfCancellationRequested();
 
         receiveResult = await Client.ReceiveAsync(buffer, cancellationToken);
-
-        // A cancel on ReceiveAsync will abort the socket
-        // https://github.com/dotnet/runtime/issues/31566
-        if (Client.State == WebSocketState.Aborted)
-        {
-          return null;
-        }
 
         await receiveStream.WriteAsync(buffer.AsMemory(0, receiveResult.Count), cancellationToken);
       } while (!receiveResult.EndOfMessage);
 
       // Rewind the memorystream so it can be read by readline
+      cancellationToken.ThrowIfCancellationRequested();
       receiveStream.Position = 0;
       var message = await reader.ReadLineAsync(cancellationToken);
 
       if (message is null && receiveResult.CloseStatus == WebSocketCloseStatus.NormalClosure)
       {
         // Represents a normal closure, so we just send an empty string to the client which should be a noop
-        return null;
+        throw new OperationCanceledException("Websocket closed normally");
       }
 
       return message ?? throw receiveResult.CloseStatus switch

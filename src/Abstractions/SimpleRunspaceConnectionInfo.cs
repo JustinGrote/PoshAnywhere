@@ -13,7 +13,6 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   private readonly CancellationTokenSource CancellationTokenSource = new();
   private readonly TransportProvider TransportProvider;
   private readonly PSCmdlet PSCmdlet;
-  private readonly BlockingCollection<object> ConnectionResult = new();
   private readonly string? Name;
   public CancellationToken CancellationToken => CancellationTokenSource.Token;
 
@@ -83,7 +82,6 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
     {
       throw new PipelineStoppedException(cancelEx.Message, cancelEx);
     }
-
     return PSSession.Create(
       runspace: Runspace,
       transportName: "WebSocket",
@@ -96,31 +94,27 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   /// </summary>
   public BlockingCollection<object> CmdletConnect()
   {
-    try
-    {
-      Task.Run(CmdletConnectAsync);
-    }
-    catch (Exception ex) when (ex is not OperationCanceledException)
-    {
-      ConnectionResult.Add(ex);
-    }
-    return ConnectionResult;
+    BlockingCollection<object> connectionResult = new();
+    // Starts this task in the background which will popualate the BlockingCollection with the connection result.
+    Task.Run(() => CmdletConnectAsync(connectionResult));
+    return connectionResult;
   }
 
-  async Task CmdletConnectAsync()
+  async Task CmdletConnectAsync(BlockingCollection<object> connectionResult)
   {
     try
     {
-      ConnectionResult.Add(await ConnectAsync());
+      connectionResult.Add("Connecting to remote server...");
+      connectionResult.Add(await ConnectAsync());
     }
-    catch (OperationCanceledException ex)
+    catch (PipelineStoppedException pEx)
     {
-      ConnectionResult.Add("The connection was canceled: " + ex.Message);
+      connectionResult.Add("The connection was canceled: " + pEx.Message);
     }
     finally
     {
       // Will unblock the PSCmdlet
-      ConnectionResult.CompleteAdding();
+      connectionResult.CompleteAdding();
     }
   }
 
