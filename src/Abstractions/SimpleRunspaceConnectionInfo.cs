@@ -96,7 +96,14 @@ public abstract class SimpleRunspaceConnectionInfo : UnauthenticatedRunspaceConn
   /// </summary>
   public BlockingCollection<object> CmdletConnect()
   {
-    Task.Run(CmdletConnectAsync);
+    try
+    {
+      Task.Run(CmdletConnectAsync);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+      ConnectionResult.Add(ex);
+    }
     return ConnectionResult;
   }
 

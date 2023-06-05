@@ -131,6 +131,11 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
 
   private void HandleTransportException(Exception ex, TransportMethodEnum method = TransportMethodEnum.Unknown)
   {
+    if (ex is OperationCanceledException)
+    {
+      throw ex;
+    }
+
     if (ex is ObjectDisposedException)
     {
       // This is the normal expectation when the client closes the connection and should stop the task

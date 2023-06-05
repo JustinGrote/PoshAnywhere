@@ -55,13 +55,14 @@ class StreamTransportManager : ClientSessionTransportManagerBase
   /// <summary>
   /// Instantiates a new Stream Transport. To the <paramref name="stream"/> parameter, provide a bidirectional UTF8-encoded stream that sends and accepts PSRP single line XML messages
   /// </summary>
-  internal StreamTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, StreamReader reader, StreamWriter writer) : base(instanceId, cryptoHelper)
+  internal StreamTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, StreamReader reader, StreamWriter writer, bool disposeStream = false) : base(instanceId, cryptoHelper)
   {
     InstanceId = instanceId;
     SessionName = sessionName;
     Reader = reader;
     writer.AutoFlush = true;
     Writer = writer;
+    DisposeStream = disposeStream;
   }
 
   internal StreamTransportManager(Guid instanceId, string sessionName, PSRemotingCryptoHelper cryptoHelper, Stream stream) : this(instanceId, sessionName, cryptoHelper, new(stream), new(stream))
