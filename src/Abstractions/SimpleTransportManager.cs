@@ -8,6 +8,7 @@ namespace PoshTransports;
 
 /// <summary>
 /// This interface provides a simple way to implement a PSRP custom transport provider. You should implement this interface and pass it to the constructor of a new SimpleRunspaceConnectionInfo object. You can safely throw any exception which will flag the runspace as broken with your exception as the reason, or an error reported to the upstream PSCmdlet or host responsible for creating the runspace if the runspace has not connected yet. Use Dispose to clean up any resources you have allocated.
+/// You should also implement Dispose() to close the connection and clean up any resources involved with the connection.
 /// </summary>
 public interface TransportProvider : IDisposable
 {
@@ -34,7 +35,7 @@ public interface TransportProvider : IDisposable
   void CreateConnection(CancellationToken cancellationToken = default) { }
 
   /// <summary>
-  /// This optional method will be called when the client wants to close the connection (for example, when Remove-PSSession is called). You should signal your transport to close the connection. The client will likely send at least one more PSRP Close message to your server, so your transport should be able to handle that gracefully before closing.
+  /// This method will be called before the final PSRP message has been sent to the client. Typically you do not need to implement this unless your transport needs to be prepared for a session to be closing.
   /// </summary>
   void CloseConnection(CancellationToken cancellationToken = default) { }
 }
@@ -76,11 +77,10 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
 
   public override void CloseAsync()
   {
-    Console.WriteLine("CloseAsync");
     try
     {
-      base.CloseAsync();
       TransportProvider.CloseConnection(CancellationToken);
+      base.CloseAsync();
     }
     catch (Exception ex)
     {
@@ -90,7 +90,6 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
 
   protected override void CleanupConnection()
   {
-    Console.WriteLine("CleanupConnectionBegin");
     try
     {
       TransportProvider.Dispose();
@@ -99,7 +98,6 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
     {
       HandleTransportException(ex, TransportMethodEnum.CloseShellOperationEx);
     }
-    Console.WriteLine("CleanupConnectionEnd");
   }
 
   private async Task TransportDataReceiveHandler()
@@ -114,7 +112,6 @@ public class SimpleTransportManager : ClientSessionTransportManagerBase
       }
       catch (OperationCanceledException)
       {
-        // A cancellation means we want to end the loop
         return;
       }
       catch (Exception ex)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 
@@ -12,11 +13,13 @@ public abstract class SimpleTransportCmdletBase : PSCmdlet
   /// This is used to track the active connection info task so that we can cancel it if the user hits ctrl+c without affecting the already connected sessions.
   /// </summary>
   private SimpleRunspaceConnectionInfo? CurrentConnectionInfo;
+
+  private BlockingCollection<object>? ConnectResult;
   protected override sealed void ProcessRecord()
   {
     CurrentConnectionInfo = CreateConnectionInfo();
-    using var cmdletConnectOutput = CurrentConnectionInfo.CmdletConnect();
-    WriteEnumerable<PSSession>(cmdletConnectOutput.GetConsumingEnumerable());
+    ConnectResult = CurrentConnectionInfo.CmdletConnect();
+    WriteEnumerable<PSSession>(ConnectResult.GetConsumingEnumerable());
     base.ProcessRecord();
   }
 
@@ -31,6 +34,7 @@ public abstract class SimpleTransportCmdletBase : PSCmdlet
   protected override sealed void StopProcessing()
   {
     CurrentConnectionInfo?.Cancel();
+    ConnectResult!.CompleteAdding();
   }
 
   internal void WriteEnumerable<T>(IEnumerable<object> collection)

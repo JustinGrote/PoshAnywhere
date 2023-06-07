@@ -135,21 +135,16 @@ public class WebSocketTransport : TransportProvider
     }
   }
 
-  public void CloseConnection(CancellationToken cancellationToken)
+  public void Dispose()
   {
     if (Client.State == WebSocketState.Open)
     {
       Client.CloseAsync(
         WebSocketCloseStatus.NormalClosure,
         "Client initiated a normal close of the session, probably due to the PSSession being removed",
-        cancellationToken
+        default
       ).GetAwaiter().GetResult();
     }
-  }
-
-  public void Dispose()
-  {
-    CloseConnection(default);
     Client.Dispose();
     GC.SuppressFinalize(this);
   }
