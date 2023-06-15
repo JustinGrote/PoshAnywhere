@@ -47,12 +47,12 @@ Note that this implementation part is almost exclusively focused on the **client
 ```mermaid
 sequenceDiagram
   actor A as User
-  box Navy Implement This
+  box LightBlue Implement This
   participant C as NewCustomSessionCmdlet
   end
   participant F as RunspaceFactory
   participant R as Runspace
-  box Navy Implement These
+  box LightBlue Implement These
   participant I as RunspaceConnectionInfo
   participant T as ClientSessionTransportManagerBase
   end
